@@ -1,0 +1,10 @@
+```rust
+{
+  "extends": "@lichtblick/tsconfig/base",
+  "include": ["./**/*", "../common/*", "../../package.json"],
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "rootDir": "../../"
+  }
+}
+```

@@ -1,0 +1,12 @@
+```rust
+{
+  "extends": "@lichtblick/tsconfig/base",
+  "include": ["./**/*"],
+  "compilerOptions": {
+    "rootDir": "../../",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "lib": ["dom", "dom.iterable", "es2022"]
+  }
+}
+```

@@ -1,0 +1,14 @@
+```toml
+{
+  "extends": "@lichtblick/tsconfig/base",
+  "include": ["./**/*"],
+  "compilerOptions": {
+    "composite": true,
+    "incremental": true,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "noEmit": true,
+    "lib": ["es2022"]
+  }
+}
+```

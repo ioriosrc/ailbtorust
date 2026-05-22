@@ -1,0 +1,7 @@
+This code is written in TypeScript and uses the `react-testing-library` for testing React components. The `PanelSetup` component imports a story fixture from `@mui/material/test-utils`, which provides a fixture for setting up test environments with specific UI elements.
+
+The `BasicsChinese` and `BasicsJapanese` stories demonstrate how to render the same basic settings panel with Chinese and Japanese translations, respectively. The `DisabledFields` story demonstrates how to disable certain fields in the settings panel by using the `update` action and providing a new value for the field.
+
+The `ReadonlyFields` story shows how to make some fields readonly in the settings panel by setting the `readonly` property of the field object.
+
+The `PanelExamples`, `IconExamples`, `Topics`, `Filter`, `Colors`, `EmptyValue`, `SetHiddenValueToTrue`, and `Vec2/Vec3` stories demonstrate the various types of inputs that can be used in the settings panel, including strings, numbers, arrays, objects, and custom data types. The `SelectInvalidWithUndefined`, `SelectInvalidWithoutUndefined`, `SelectValidWithUndefined`, `SelectValidWithEmptyString`, `SelectEmpty`, and `SelectEmptyInvalid` stories demonstrate how to handle invalid selections in a select input field.

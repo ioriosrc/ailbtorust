@@ -1,0 +1,11 @@
+```rust
+{
+  name: "desktop",
+  private: true,
+  devDependencies: {
+    "@lichtblick/suite-base": "workspace:*",
+    "@lichtblick/suite-desktop": "workspace:*",
+    "@lichtblick/tsconfig": "1.0.2"
+  }
+}
+```

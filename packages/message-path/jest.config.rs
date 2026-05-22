@@ -1,0 +1,13 @@
+```rust
+use serde_json::json;
+
+let rust_code = json!({
+  "testMatch": ["<rootDir>/src/**/*.test.ts(x)?"],
+  "transform": {
+    "\\.[jt]sx?$": ["babel-jest", { "rootMode": "upward" }],
+    "\\.ne$": "<rootDir>/../suite-base/src/test/transformers/neTransformer.js"
+  },
+  "//": "Native find is slow because it does not exclude files: https://github.com/facebook/jest/pull/11264#issuecomment-825377579",
+  "haste": { "forceNodeFilesystemAPI": true }
+});
+```

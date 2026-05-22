@@ -1,0 +1,11 @@
+```json
+{
+  "extends": "@lichtblick/tsconfig/base",
+  "include": ["./**/*"],
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "./dist",
+    "lib": ["DOM", "es2022"]
+  }
+}
+```

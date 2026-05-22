@@ -1,0 +1,20 @@
+```rust
+pub type RegisteredIconNames = [
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+    &str,
+];
+```
