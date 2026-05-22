@@ -34,3 +34,5 @@ gloo-timers = { workspace = true }
 gloo-events = { workspace = true }
 gloo-utils = { workspace = true }
 gloo-file = { workspace = true }
+lz4_flex = { workspace = true }
+ruzstd = { workspace = true }

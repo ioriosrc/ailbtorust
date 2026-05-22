@@ -8,6 +8,7 @@
 pub mod app;
 pub mod components;
 pub mod decoder;
+pub mod mcap_reader;
 pub mod panels;
 pub mod player;
 pub mod state;

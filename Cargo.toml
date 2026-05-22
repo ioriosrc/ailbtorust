@@ -88,6 +88,7 @@ ordered-float = { version = "4.0", features = ["serde"] }
 regex = "1.0"
 base64 = "0.22"
 lz4_flex = "0.11"
+ruzstd = "0.7"
 
 # Internal crates
 lichtblick-core = { path = "crates/lichtblick-core" }
