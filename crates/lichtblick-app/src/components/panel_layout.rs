@@ -7,22 +7,79 @@ use wasm_bindgen::JsCast;
 
 use crate::decoder::is_compressed_image_schema;
 use crate::panels::data_source_info::DataSourceInfoPanel;
+use crate::panels::diagnostics_panel::DiagnosticsPanel;
 use crate::panels::image_panel::ImagePanel;
+use crate::panels::log_panel::LogPanel;
+use crate::panels::plot_panel::PlotPanel;
 use crate::panels::raw_messages_panel::RawMessagesPanel;
+use crate::panels::state_transitions_panel::StateTransitionsPanel;
+use crate::panels::teleop_panel::TeleopPanel;
 use crate::panels::three_dee_panel::{is_point_cloud_schema, ThreeDeePanel};
 use crate::panels::topic_list::TopicList;
-use crate::state::app_state::{get_player, use_app_state};
+use crate::state::app_state::{
+    get_player, use_app_state, use_layout_state,
+    LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
+};
 
-/// Panel layout manager - default Lichtblick layout with resizable splits.
+/// Panel layout manager.
 #[component]
 pub fn PanelLayout() -> impl IntoView {
     let state = use_app_state();
+    let layout = use_layout_state();
     let has_layout = move || state.has_active_layout.get();
+    let layout_initialized = RwSignal::new(false);
+
+    // Set up default layout when data loads
+    Effect::new(move |_| {
+        if !state.has_active_layout.get() {
+            return;
+        }
+        if layout_initialized.get_untracked() {
+            return;
+        }
+        if let Some(player) = get_player() {
+            let topics = player.topics();
+            let image_topic = topics.iter()
+                .find(|t| is_compressed_image_schema(&t.schema_name))
+                .map(|t| t.name.clone());
+            let has_pc = topics.iter().any(|t| is_point_cloud_schema(&t.schema_name));
+            let first_other = topics.iter()
+                .find(|t| !is_compressed_image_schema(&t.schema_name) && !is_point_cloud_schema(&t.schema_name))
+                .map(|t| t.name.clone());
+            layout.set_default_layout(image_topic, has_pc, first_other);
+            layout_initialized.set(true);
+        }
+    });
+
+    // Handle Escape key for fullscreen exit
+    Effect::new(move |_| {
+        let _ = layout.fullscreen_panel.get();
+        // Register keydown listener
+        let document = web_sys::window().unwrap().document().unwrap();
+        let closure = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
+            if ev.key() == "Escape" {
+                layout.fullscreen_panel.set(None);
+            }
+        });
+        document.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref()).ok();
+        closure.forget();
+    });
 
     view! {
         <div class="panel-layout">
             {move || if has_layout() {
-                view! { <DefaultLayout /> }.into_any()
+                let tree = layout.tree.get();
+                let fullscreen = layout.fullscreen_panel.get();
+                if let Some(fs_id) = fullscreen {
+                    // Show fullscreen panel on top
+                    view! {
+                        <div class="panel-fullscreen-backdrop">
+                            <FullscreenPanel node_id=fs_id tree=tree />
+                        </div>
+                    }.into_any()
+                } else {
+                    view! { <LayoutNodeView node=tree /> }.into_any()
+                }
             } else {
                 view! { <EmptyLayout /> }.into_any()
             }}
@@ -30,106 +87,65 @@ pub fn PanelLayout() -> impl IntoView {
     }
 }
 
-/// The default Lichtblick-style layout with resizable panels.
+/// Render a fullscreen panel by finding it in the tree.
 #[component]
-fn DefaultLayout() -> impl IntoView {
-    // Panel split ratios (percentage for left panel)
-    let h_split = RwSignal::new(65.0f64); // horizontal split: left vs right
-    let v_split = RwSignal::new(50.0f64); // vertical split: right-top vs right-bottom
-
-    // Detect image and other topics
-    let image_topics = RwSignal::new(Vec::<String>::new());
-    let has_point_cloud = RwSignal::new(false);
-    let first_topic = RwSignal::new(String::new());
-
-    Effect::new(move |_| {
-        if let Some(player) = get_player() {
-            let topics = player.topics();
-
-            let img_topics: Vec<String> = topics
-                .iter()
-                .filter(|t| is_compressed_image_schema(&t.schema_name))
-                .map(|t| t.name.clone())
-                .collect();
-
-            let has_pc = topics.iter().any(|t| is_point_cloud_schema(&t.schema_name));
-            has_point_cloud.set(has_pc);
-            image_topics.set(img_topics);
-
-            if let Some(t) = topics
-                .iter()
-                .find(|t| !is_compressed_image_schema(&t.schema_name) && !is_point_cloud_schema(&t.schema_name))
-            {
-                first_topic.set(t.name.clone());
-            } else if let Some(t) = topics.first() {
-                first_topic.set(t.name.clone());
-            }
-        }
-    });
-
-    view! {
-        <div class="mosaic-root">
-            // Left panel - Image (main view)
-            <div class="mosaic-pane mosaic-left" style=move || format!("flex: 0 0 {}%", h_split.get())>
-                {move || {
-                    let imgs = image_topics.get();
-                    if imgs.is_empty() {
-                        // No images - show 3D panel
-                        view! { <ThreeDeePanel /> }.into_any()
-                    } else {
-                        let topic = imgs[0].clone();
-                        view! { <ImagePanel topic=topic /> }.into_any()
-                    }
-                }}
-            </div>
-
-            // Horizontal splitter
-            <HorizontalSplitter split=h_split />
-
-            // Right panel (split vertically)
-            <div class="mosaic-pane mosaic-right" style=move || format!("flex: 0 0 calc({}% - 4px)", 100.0 - h_split.get())>
-                // Right-top: 3D panel (always available for point clouds/grid)
-                <div class="mosaic-pane mosaic-right-top" style=move || format!("flex: 0 0 {}%", v_split.get())>
-                    {move || {
-                        if has_point_cloud.get() {
-                            view! { <ThreeDeePanel /> }.into_any()
-                        } else {
-                            view! { <DataSourceInfoPanel /> }.into_any()
-                        }
-                    }}
-                </div>
-
-                // Vertical splitter
-                <VerticalSplitter split=v_split />
-
-                // Right-bottom
-                <div class="mosaic-pane mosaic-right-bottom" style=move || format!("flex: 0 0 calc({}% - 4px)", 100.0 - v_split.get())>
-                    {move || {
-                        let t = first_topic.get();
-                        if t.is_empty() {
-                            view! {
-                                <div class="panel-container">
-                                    <div class="panel-toolbar">
-                                        <span class="panel-title">{"Raw Messages"}</span>
-                                    </div>
-                                    <div class="panel-content panel-empty">
-                                        <span>{"No topic selected"}</span>
-                                    </div>
-                                </div>
-                            }.into_any()
-                        } else {
-                            view! { <RawMessagesPanel topic=t /> }.into_any()
-                        }
-                    }}
-                </div>
-            </div>
-        </div>
+fn FullscreenPanel(node_id: NodeId, tree: LayoutNode) -> impl IntoView {
+    let panel_node = find_panel_in_tree(&tree, node_id);
+    if let Some(node) = panel_node {
+        view! { <PanelContainer node=node /> }.into_any()
+    } else {
+        view! { <div></div> }.into_any()
     }
 }
 
-/// Horizontal splitter (drag left-right to resize).
+fn find_panel_in_tree(node: &LayoutNode, target_id: NodeId) -> Option<LayoutNode> {
+    match node {
+        LayoutNode::Panel { id, .. } => {
+            if *id == target_id { Some(node.clone()) } else { None }
+        }
+        LayoutNode::Split { first, second, .. } => {
+            find_panel_in_tree(first, target_id)
+                .or_else(|| find_panel_in_tree(second, target_id))
+        }
+    }
+}
+
+/// Recursive layout node renderer.
 #[component]
-fn HorizontalSplitter(split: RwSignal<f64>) -> impl IntoView {
+fn LayoutNodeView(node: LayoutNode) -> impl IntoView {
+    match node {
+        LayoutNode::Panel { .. } => {
+            view! { <PanelContainer node=node /> }.into_any()
+        }
+        LayoutNode::Split { id: _, direction, ratio, first, second } => {
+            let ratio_signal = RwSignal::new(ratio);
+            let is_horizontal = direction == SplitDirection::Horizontal;
+
+            view! {
+                <div class="mosaic-split"
+                    class:mosaic-split-h=is_horizontal
+                    class:mosaic-split-v=!is_horizontal
+                >
+                    <div class="mosaic-pane mosaic-first"
+                        style=move || format!("flex: 0 0 calc({}% - 2px)", ratio_signal.get())
+                    >
+                        <LayoutNodeView node=*first />
+                    </div>
+                    <SplitHandle is_horizontal=is_horizontal ratio=ratio_signal />
+                    <div class="mosaic-pane mosaic-second"
+                        style=move || format!("flex: 0 0 calc({}% - 2px)", 100.0 - ratio_signal.get())
+                    >
+                        <LayoutNodeView node=*second />
+                    </div>
+                </div>
+            }.into_any()
+        }
+    }
+}
+
+/// Draggable split handle.
+#[component]
+fn SplitHandle(is_horizontal: bool, ratio: RwSignal<f64>) -> impl IntoView {
     let is_dragging = RwSignal::new(false);
 
     let on_mousedown = move |ev: leptos::ev::MouseEvent| {
@@ -139,10 +155,8 @@ fn HorizontalSplitter(split: RwSignal<f64>) -> impl IntoView {
         let document = web_sys::window().unwrap().document().unwrap();
         let window = web_sys::window().unwrap();
 
-        // Add dragging class to body to prevent text selection
         document.body().unwrap().class_list().add_1("splitter-dragging").ok();
 
-        // Use Rc<RefCell> to share the closures between themselves
         let move_cb: std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut(web_sys::MouseEvent)>>>> =
             std::rc::Rc::new(std::cell::RefCell::new(None));
         let up_cb: std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut(web_sys::MouseEvent)>>>> =
@@ -151,26 +165,31 @@ fn HorizontalSplitter(split: RwSignal<f64>) -> impl IntoView {
         let move_cb_clone = move_cb.clone();
         let up_cb_clone = up_cb.clone();
 
-        let doc_clone = document.clone();
+        let target = ev.current_target().unwrap();
+        let handle_el: web_sys::HtmlElement = target.dyn_into().unwrap();
+        let parent = handle_el.parent_element().unwrap();
+        let parent_rect = parent.get_bounding_client_rect();
+        let parent_left = parent_rect.left();
+        let parent_top = parent_rect.top();
+        let parent_width = parent_rect.width();
+        let parent_height = parent_rect.height();
+
         let mousemove = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |ev: web_sys::MouseEvent| {
-            if let Some(root) = doc_clone.query_selector(".mosaic-root").unwrap() {
-                let rect = root.get_bounding_client_rect();
-                let x = ev.client_x() as f64 - rect.left();
-                let width = rect.width();
-                if width > 0.0 {
-                    let pct = (x / width * 100.0).clamp(20.0, 80.0);
-                    split.set(pct);
-                }
-            }
+            let pct = if is_horizontal {
+                let x = ev.client_x() as f64 - parent_left;
+                (x / parent_width * 100.0).clamp(15.0, 85.0)
+            } else {
+                let y = ev.client_y() as f64 - parent_top;
+                (y / parent_height * 100.0).clamp(15.0, 85.0)
+            };
+            ratio.set(pct);
         });
 
         let window_clone = window.clone();
-        let doc_clone2 = document.clone();
+        let doc_clone = document.clone();
         let mouseup = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |_: web_sys::MouseEvent| {
             is_dragging.set(false);
-            doc_clone2.body().unwrap().class_list().remove_1("splitter-dragging").ok();
-
-            // Remove listeners
+            doc_clone.body().unwrap().class_list().remove_1("splitter-dragging").ok();
             if let Some(cb) = move_cb_clone.borrow().as_ref() {
                 window_clone.remove_event_listener_with_callback("mousemove", cb.as_ref().unchecked_ref()).ok();
             }
@@ -188,75 +207,194 @@ fn HorizontalSplitter(split: RwSignal<f64>) -> impl IntoView {
 
     view! {
         <div
-            class="splitter splitter-horizontal"
+            class="splitter"
+            class:splitter-horizontal=is_horizontal
+            class:splitter-vertical=!is_horizontal
             class:active=move || is_dragging.get()
             on:mousedown=on_mousedown
         ></div>
     }
 }
 
-/// Vertical splitter (drag up-down to resize).
+/// A single panel container with toolbar and context menu.
 #[component]
-fn VerticalSplitter(split: RwSignal<f64>) -> impl IntoView {
-    let is_dragging = RwSignal::new(false);
+fn PanelContainer(node: LayoutNode) -> impl IntoView {
+    let layout = use_layout_state();
 
-    let on_mousedown = move |ev: leptos::ev::MouseEvent| {
-        ev.prevent_default();
-        is_dragging.set(true);
+    let (node_id, panel_type, topic) = match &node {
+        LayoutNode::Panel { id, panel_type, topic } => (*id, panel_type.clone(), topic.clone()),
+        _ => return view! { <div></div> }.into_any(),
+    };
 
-        let document = web_sys::window().unwrap().document().unwrap();
-        let window = web_sys::window().unwrap();
+    let menu_open = RwSignal::new(false);
+    let submenu_open = RwSignal::new(false);
 
-        document.body().unwrap().class_list().add_1("splitter-dragging-v").ok();
+    let title = panel_type.display_name().to_string();
 
-        let move_cb: std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut(web_sys::MouseEvent)>>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
-        let up_cb: std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut(web_sys::MouseEvent)>>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
+    let toggle_menu = move |_: leptos::ev::MouseEvent| {
+        let is_open = menu_open.get_untracked();
+        menu_open.set(!is_open);
+        if is_open {
+            submenu_open.set(false);
+        }
+    };
 
-        let move_cb_clone = move_cb.clone();
-        let up_cb_clone = up_cb.clone();
-
-        let doc_clone = document.clone();
-        let mousemove = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |ev: web_sys::MouseEvent| {
-            if let Some(root) = doc_clone.query_selector(".mosaic-right").unwrap() {
-                let rect = root.get_bounding_client_rect();
-                let y = ev.client_y() as f64 - rect.top();
-                let height = rect.height();
-                if height > 0.0 {
-                    let pct = (y / height * 100.0).clamp(15.0, 85.0);
-                    split.set(pct);
-                }
-            }
+    // Close menu on outside click
+    let close_menu = move || {
+        let close = Closure::once(move || {
+            menu_open.set(false);
+            submenu_open.set(false);
         });
+        web_sys::window().unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                close.as_ref().unchecked_ref(), 150
+            ).ok();
+        close.forget();
+    };
 
-        let window_clone = window.clone();
-        let doc_clone2 = document.clone();
-        let mouseup = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |_: web_sys::MouseEvent| {
-            is_dragging.set(false);
-            doc_clone2.body().unwrap().class_list().remove_1("splitter-dragging-v").ok();
+    let on_blur = move |_: leptos::ev::FocusEvent| {
+        close_menu();
+    };
 
-            if let Some(cb) = move_cb_clone.borrow().as_ref() {
-                window_clone.remove_event_listener_with_callback("mousemove", cb.as_ref().unchecked_ref()).ok();
-            }
-            if let Some(cb) = up_cb_clone.borrow().as_ref() {
-                window_clone.remove_event_listener_with_callback("mouseup", cb.as_ref().unchecked_ref()).ok();
-            }
-        });
+    let on_split_right = move |_: leptos::ev::MouseEvent| {
+        layout.split_panel(node_id, SplitDirection::Horizontal);
+        menu_open.set(false);
+    };
 
-        window.add_event_listener_with_callback("mousemove", mousemove.as_ref().unchecked_ref()).unwrap();
-        window.add_event_listener_with_callback("mouseup", mouseup.as_ref().unchecked_ref()).unwrap();
+    let on_split_down = move |_: leptos::ev::MouseEvent| {
+        layout.split_panel(node_id, SplitDirection::Vertical);
+        menu_open.set(false);
+    };
 
-        *move_cb.borrow_mut() = Some(mousemove);
-        *up_cb.borrow_mut() = Some(mouseup);
+    let on_fullscreen = move |_: leptos::ev::MouseEvent| {
+        let current = layout.fullscreen_panel.get_untracked();
+        if current == Some(node_id) {
+            layout.fullscreen_panel.set(None);
+        } else {
+            layout.fullscreen_panel.set(Some(node_id));
+        }
+        menu_open.set(false);
+    };
+
+    let on_remove = move |_: leptos::ev::MouseEvent| {
+        layout.remove_panel(node_id);
+        menu_open.set(false);
+    };
+
+    let on_change_hover = move |_: leptos::ev::MouseEvent| {
+        submenu_open.set(true);
     };
 
     view! {
-        <div
-            class="splitter splitter-vertical"
-            class:active=move || is_dragging.get()
-            on:mousedown=on_mousedown
-        ></div>
+        <div class="panel-container">
+            <div class="panel-toolbar">
+                <span class="panel-title">{title}</span>
+                {topic.clone().map(|t| view! {
+                    <span class="panel-topic">{t}</span>
+                })}
+                <div class="panel-toolbar-actions">
+                    <button class="panel-toolbar-btn" title="Settings">{"⚙"}</button>
+                    <button
+                        class="panel-toolbar-btn panel-menu-trigger"
+                        title="Panel menu"
+                        on:click=toggle_menu
+                        on:blur=on_blur
+                    >{"⋮"}</button>
+                </div>
+                // Context menu dropdown
+                <div class="panel-context-menu" class:panel-context-menu-open=move || menu_open.get()>
+                    <div class="panel-menu-item panel-menu-item-submenu"
+                        on:mouseenter=on_change_hover
+                    >
+                        <span>{"Change panel"}</span>
+                        <span class="menu-arrow">{"›"}</span>
+                        <div class="panel-submenu" class:panel-submenu-open=move || submenu_open.get()>
+                            {PanelType::all().iter().map(|pt| {
+                                let pt_clone = pt.clone();
+                                let name = pt.display_name().to_string();
+                                view! {
+                                    <div class="panel-menu-item"
+                                        on:mousedown=move |_: leptos::ev::MouseEvent| {
+                                            layout.change_panel(node_id, pt_clone.clone());
+                                            menu_open.set(false);
+                                            submenu_open.set(false);
+                                        }
+                                    >
+                                        <span>{name}</span>
+                                    </div>
+                                }
+                            }).collect::<Vec<_>>()}
+                        </div>
+                    </div>
+                    <div class="panel-menu-separator"></div>
+                    <div class="panel-menu-item" on:mousedown=on_split_right>
+                        <span>{"Split right"}</span>
+                    </div>
+                    <div class="panel-menu-item" on:mousedown=on_split_down>
+                        <span>{"Split down"}</span>
+                    </div>
+                    <div class="panel-menu-separator"></div>
+                    <div class="panel-menu-item" on:mousedown=on_fullscreen>
+                        <span>{"Fullscreen"}</span>
+                    </div>
+                    <div class="panel-menu-separator"></div>
+                    <div class="panel-menu-item panel-menu-item-danger" on:mousedown=on_remove>
+                        <span>{"Remove panel"}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="panel-content">
+                <PanelContent panel_type=panel_type topic=topic />
+            </div>
+        </div>
+    }.into_any()
+}
+
+/// Render the actual panel content based on type.
+#[component]
+fn PanelContent(panel_type: PanelType, topic: Option<String>) -> impl IntoView {
+    match panel_type {
+        PanelType::Image => {
+            let t = topic.unwrap_or_default();
+            if t.is_empty() {
+                view! { <div class="panel-empty">{"Select an image topic"}</div> }.into_any()
+            } else {
+                view! { <ImagePanel topic=t /> }.into_any()
+            }
+        }
+        PanelType::ThreeDee => view! { <ThreeDeePanel /> }.into_any(),
+        PanelType::RawMessages => {
+            let t = topic.unwrap_or_default();
+            if t.is_empty() {
+                view! { <div class="panel-empty">{"Select a topic"}</div> }.into_any()
+            } else {
+                view! { <RawMessagesPanel topic=t /> }.into_any()
+            }
+        }
+        PanelType::DataSourceInfo => view! { <DataSourceInfoPanel /> }.into_any(),
+        PanelType::Log => {
+            let t = topic.unwrap_or_default();
+            view! { <LogPanel topic=t /> }.into_any()
+        }
+        PanelType::Plot => {
+            let t = topic.unwrap_or_default();
+            view! { <PlotPanel topic=t /> }.into_any()
+        }
+        PanelType::Diagnostics => view! { <DiagnosticsPanel /> }.into_any(),
+        PanelType::StateTransitions => {
+            let t = topic.unwrap_or_default();
+            view! { <StateTransitionsPanel topic=t /> }.into_any()
+        }
+        PanelType::Teleop => view! { <TeleopPanel /> }.into_any(),
+        PanelType::TopicList => view! { <TopicList /> }.into_any(),
+        _ => {
+            let name = panel_type.display_name().to_string();
+            view! {
+                <div class="panel-empty">
+                    <span>{format!("{} (coming soon)", name)}</span>
+                </div>
+            }.into_any()
+        }
     }
 }
 
