@@ -1,5 +1,0 @@
-The provided code snippet is a Jest test suite for the `Player` component in a hypothetical application. It tests various functionalities of the player, including starting playback, pausing playback, setting playback speed, seeking playback, and more. The `FakePlayer` class is used to simulate the behavior of the actual player, providing mock methods for emitting events, setting capabilities, and handling metadata.
-
-The test cases cover a wide range of scenarios, including different combinations of player controls (start/pause/playback control), pausing multiple frames at once, adding promises that resolve or reject after a certain timeout, and replacing the player component without losing its state. The use of Jest's `act` function ensures that the asynchronous operations are properly awaited and handled.
-
-The code snippet also includes assertions to check that the metadata is correctly retrieved from the player instance.

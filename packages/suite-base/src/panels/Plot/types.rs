@@ -1,3 +1,0 @@
-```rust
-use crate::{Chart, ChartDataset, ScatterDataPoint, BaseInteractionEvent, MouseBase, WheelInteractionEvent, PanStartInteractionEvent, PanMoveInteractionEvent, PanEndInteractionEvent, InteractionEvent, Datum, Dataset, ChartType, HoverElement, Size, ReferenceLine, UpdateAction, MutableContext, PanEvent, PanStartEvent, ZoomableChart, PlotProps, ElementAtPixelArgs, UseHoverHandlersHook, TooltipStateSetter, ChartRendererProps, ChartOptionsPlot, VerticalBarsProps, UsePlotDataHandling, UsePlotInteractionHandlersProps, PlotCoordinatorEventTypes, ConfigBounds, HandleAction, HandleDeleteSeriesAction, HandleUpdateAction, MakeSeriesNode, MakeRootSeriesNode, HandleMoveSeriesAction};
-```

@@ -1,4 +1,6 @@
+/target
+/dist
+/web/pkg
+*.wasm
+.DS_Store
 node_modules/
-.yarn/
-.vscode/
-.env

@@ -1,0 +1,17 @@
+[build]
+# Output directory
+dist = "dist"
+# The index HTML file
+target = "web/index.html"
+
+[watch]
+watch = ["crates", "web"]
+
+[serve]
+address = "127.0.0.1"
+port = 8080
+
+[[hooks]]
+stage = "build"
+command = "sh"
+command_arguments = ["-c", "cp web/style.css dist/ 2>/dev/null || true"]

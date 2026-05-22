@@ -1,3 +1,0 @@
-```rust
-pub type FoxgloveWeb = ();
-```

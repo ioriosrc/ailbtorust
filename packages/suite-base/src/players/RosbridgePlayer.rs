@@ -1,7 +1,0 @@
-This code defines a `RosbridgePlayer` class that implements a ROS bridge client in JavaScript. The class provides methods for connecting to a ROS server, subscribing to topics, publishing messages, calling services, and refreshing the system state graph. It also includes methods for starting and pausing playback, seeking within the playback timeline, setting the playback speed, and setting global variables.
-
-The `RosbridgePlayer` class uses the `roslib.js` library to interact with the ROS server. The `connect` method establishes a connection to the ROS server using the provided endpoint URL. The `setSubscriptions` method allows subscribing to additional topics used by RosbridgePlayer itself. The `publish` method sends messages to specified topics, and the `callService` method calls services on the ROS server.
-
-The class also includes methods for refreshing the system state graph in the background. This is done using the `getNodes`, `getNodeDetails`, and `mapNode` functions from the `roslib.js` library. The `refreshSystemState` method collects node details for all nodes subscribed to, including publications, subscriptions, and services.
-
-Overall, the `RosbridgePlayer` class provides a high-level interface for interacting with a ROS server using JavaScript, making it easy to create real-time applications that communicate with robots or other IoT devices.
