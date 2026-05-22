@@ -15,12 +15,10 @@ use crate::state::app_state::{get_player, use_app_state};
 #[component]
 pub fn ImagePanel(
     #[prop(into)] topic: String,
-    #[prop(optional, into)] title: Option<String>,
 ) -> impl IntoView {
     let state = use_app_state();
     let frame_tick = state.frame_tick;
     let topic_clone = topic.clone();
-    let display_title = title.unwrap_or_else(|| topic.clone());
 
     // Store the current blob URL
     let img_url = RwSignal::new(String::new());
@@ -81,30 +79,25 @@ pub fn ImagePanel(
     });
 
     view! {
-        <div class="panel-container image-panel">
-            <div class="panel-toolbar">
-                <span class="panel-title">{display_title}</span>
-            </div>
-            <div class="panel-content image-panel-content">
-                {move || {
-                    let url = img_url.get();
-                    if url.is_empty() {
-                        view! {
-                            <div class="panel-empty">
-                                <span>{"Waiting for image data..."}</span>
-                            </div>
-                        }.into_any()
-                    } else {
-                        view! {
-                            <img
-                                class="image-panel-img"
-                                src=url
-                                alt="Camera feed"
-                            />
-                        }.into_any()
-                    }
-                }}
-            </div>
+        <div class="image-panel-content">
+            {move || {
+                let url = img_url.get();
+                if url.is_empty() {
+                    view! {
+                        <div class="panel-empty">
+                            <span>{"Waiting for image data..."}</span>
+                        </div>
+                    }.into_any()
+                } else {
+                    view! {
+                        <img
+                            class="image-panel-img"
+                            src=url
+                            alt="Camera feed"
+                        />
+                    }.into_any()
+                }
+            }}
         </div>
     }
 }

@@ -157,6 +157,8 @@ pub struct LayoutState {
     pub next_id: RwSignal<NodeId>,
     /// Which panel is currently fullscreen (None = normal view).
     pub fullscreen_panel: RwSignal<Option<NodeId>>,
+    /// Which panel currently has its settings open in the sidebar (None = no settings shown).
+    pub active_settings_panel: RwSignal<Option<NodeId>>,
 }
 
 impl LayoutState {
@@ -169,7 +171,25 @@ impl LayoutState {
             }),
             next_id: RwSignal::new(2),
             fullscreen_panel: RwSignal::new(None),
+            active_settings_panel: RwSignal::new(None),
         }
+    }
+
+    /// Toggle settings sidebar for a given panel.
+    pub fn toggle_settings(&self, node_id: NodeId) {
+        let current = self.active_settings_panel.get_untracked();
+        if current == Some(node_id) {
+            self.active_settings_panel.set(None);
+        } else {
+            self.active_settings_panel.set(Some(node_id));
+        }
+    }
+
+    /// Update the topic for a given panel node.
+    pub fn set_panel_topic(&self, node_id: NodeId, new_topic: Option<String>) {
+        self.tree.update(|tree| {
+            set_topic_in_tree(tree, node_id, new_topic);
+        });
     }
 
     /// Generate a new unique node ID.
@@ -272,10 +292,11 @@ fn split_panel_in_tree(node: &mut LayoutNode, target_id: NodeId, direction: Spli
                     panel_type: panel_type.clone(),
                     topic: topic.clone(),
                 };
+                // New panel inherits the same type AND topic from original
                 let new_panel = LayoutNode::Panel {
                     id: new_panel_id,
                     panel_type: panel_type.clone(),
-                    topic: None,
+                    topic: topic.clone(),
                 };
                 *node = LayoutNode::Split {
                     id: split_id,
@@ -289,6 +310,20 @@ fn split_panel_in_tree(node: &mut LayoutNode, target_id: NodeId, direction: Spli
         LayoutNode::Split { first, second, .. } => {
             split_panel_in_tree(first, target_id, direction.clone(), new_panel_id, split_id);
             split_panel_in_tree(second, target_id, direction, new_panel_id, split_id);
+        }
+    }
+}
+
+fn set_topic_in_tree(node: &mut LayoutNode, target_id: NodeId, new_topic: Option<String>) {
+    match node {
+        LayoutNode::Panel { id, topic, .. } => {
+            if *id == target_id {
+                *topic = new_topic;
+            }
+        }
+        LayoutNode::Split { first, second, .. } => {
+            set_topic_in_tree(first, target_id, new_topic.clone());
+            set_topic_in_tree(second, target_id, new_topic);
         }
     }
 }

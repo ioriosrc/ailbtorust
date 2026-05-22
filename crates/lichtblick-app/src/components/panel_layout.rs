@@ -220,6 +220,7 @@ fn SplitHandle(is_horizontal: bool, ratio: RwSignal<f64>) -> impl IntoView {
 #[component]
 fn PanelContainer(node: LayoutNode) -> impl IntoView {
     let layout = use_layout_state();
+    let app_state = use_app_state();
 
     let (node_id, panel_type, topic) = match &node {
         LayoutNode::Panel { id, panel_type, topic } => (*id, panel_type.clone(), topic.clone()),
@@ -230,6 +231,14 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
     let submenu_open = RwSignal::new(false);
 
     let title = panel_type.display_name().to_string();
+
+    let on_settings = move |_: leptos::ev::MouseEvent| {
+        layout.toggle_settings(node_id);
+        // Open left sidebar when settings open
+        if layout.active_settings_panel.get_untracked() == Some(node_id) {
+            app_state.left_sidebar_open.set(true);
+        }
+    };
 
     let toggle_menu = move |_: leptos::ev::MouseEvent| {
         let is_open = menu_open.get_untracked();
@@ -293,7 +302,7 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
                     <span class="panel-topic">{t}</span>
                 })}
                 <div class="panel-toolbar-actions">
-                    <button class="panel-toolbar-btn" title="Settings">{"⚙"}</button>
+                    <button class="panel-toolbar-btn" title="Settings" on:click=on_settings>{"⚙"}</button>
                     <button
                         class="panel-toolbar-btn panel-menu-trigger"
                         title="Panel menu"
