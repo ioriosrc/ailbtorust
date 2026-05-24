@@ -52,16 +52,11 @@ pub fn LogPanel(#[prop(into)] topic: String) -> impl IntoView {
     });
 
     view! {
-        <div class="panel-container log-panel">
-            <div class="panel-toolbar">
-                <span class="panel-title">{"Log"}</span>
-            </div>
-            <div class="panel-content log-panel-content">
-                <div class="log-entries">
-                    {move || log_entries.get().into_iter().map(|entry| {
-                        view! { <div class="log-entry">{entry}</div> }
-                    }).collect::<Vec<_>>()}
-                </div>
+        <div class="log-panel-content">
+            <div class="log-entries">
+                {move || log_entries.get().into_iter().map(|entry| {
+                    view! { <div class="log-entry">{entry}</div> }
+                }).collect::<Vec<_>>()}
             </div>
         </div>
     }

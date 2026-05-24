@@ -136,14 +136,8 @@ pub fn PlotPanel(#[prop(into)] topic: String) -> impl IntoView {
     });
 
     view! {
-        <div class="panel-container plot-panel">
-            <div class="panel-toolbar">
-                <span class="panel-title">{"Plot"}</span>
-                <span class="panel-topic">{display_topic}</span>
-            </div>
-            <div class="panel-content plot-panel-content">
-                <canvas node_ref=canvas_ref class="plot-canvas"></canvas>
-            </div>
+        <div class="plot-panel-content">
+            <canvas node_ref=canvas_ref class="plot-canvas"></canvas>
         </div>
     }
 }

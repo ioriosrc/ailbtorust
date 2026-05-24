@@ -216,63 +216,58 @@ pub fn DiagnosticsPanel() -> impl IntoView {
     };
 
     view! {
-        <div class="panel-container panel-diagnostics">
-            <div class="panel-toolbar">
-                <span class="panel-title">{"Log"}</span>
-                <div class="log-filter-bar">
-                    <input
-                        type="text"
-                        class="log-filter-input"
-                        placeholder="Filter (regex)..."
-                        on:input=move |ev| {
-                            let val = event_target_value(&ev);
-                            filter_text.set(val);
-                        }
-                    />
-                    <select
-                        class="log-severity-select"
-                        on:change=move |ev| {
-                            let val = event_target_value(&ev);
-                            let sev = match val.as_str() {
-                                "DEBUG" => LogSeverity::Debug,
-                                "INFO" => LogSeverity::Info,
-                                "WARN" => LogSeverity::Warn,
-                                "ERROR" => LogSeverity::Error,
-                                "FATAL" => LogSeverity::Fatal,
-                                _ => LogSeverity::Debug,
-                            };
-                            min_severity.set(sev);
-                        }
-                    >
-                        <option value="DEBUG" selected>"DEBUG+"</option>
-                        <option value="INFO">"INFO+"</option>
-                        <option value="WARN">"WARN+"</option>
-                        <option value="ERROR">"ERROR+"</option>
-                        <option value="FATAL">"FATAL"</option>
-                    </select>
-                </div>
+        <div class="panel-diagnostics-content">
+            <div class="log-filter-bar">
+                <input
+                    type="text"
+                    class="log-filter-input"
+                    placeholder="Filter (regex)..."
+                    on:input=move |ev| {
+                        let val = event_target_value(&ev);
+                        filter_text.set(val);
+                    }
+                />
+                <select
+                    class="log-severity-select"
+                    on:change=move |ev| {
+                        let val = event_target_value(&ev);
+                        let sev = match val.as_str() {
+                            "DEBUG" => LogSeverity::Debug,
+                            "INFO" => LogSeverity::Info,
+                            "WARN" => LogSeverity::Warn,
+                            "ERROR" => LogSeverity::Error,
+                            "FATAL" => LogSeverity::Fatal,
+                            _ => LogSeverity::Debug,
+                        };
+                        min_severity.set(sev);
+                    }
+                >
+                    <option value="DEBUG" selected>"DEBUG+"</option>
+                    <option value="INFO">"INFO+"</option>
+                    <option value="WARN">"WARN+"</option>
+                    <option value="ERROR">"ERROR+"</option>
+                    <option value="FATAL">"FATAL"</option>
+                </select>
             </div>
-            <div class="panel-content log-panel-content">
-                <div class="log-entries">
-                    {move || {
-                        filtered_entries()
-                            .into_iter()
-                            .rev()
-                            .take(200)
-                            .map(|entry| {
-                                let css = entry.severity.css_class();
-                                let label = entry.severity.label();
-                                view! {
-                                    <div class=format!("log-entry {}", css)>
-                                        <span class="log-severity">{label}</span>
-                                        <span class="log-name">{entry.name.clone()}</span>
-                                        <span class="log-message">{entry.message.clone()}</span>
-                                    </div>
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    }}
-                </div>
+            <div class="log-entries">
+                {move || {
+                    filtered_entries()
+                        .into_iter()
+                        .rev()
+                        .take(200)
+                        .map(|entry| {
+                            let css = entry.severity.css_class();
+                            let label = entry.severity.label();
+                            view! {
+                                <div class=format!("log-entry {}", css)>
+                                    <span class="log-severity">{label}</span>
+                                    <span class="log-name">{entry.name.clone()}</span>
+                                    <span class="log-message">{entry.message.clone()}</span>
+                                </div>
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                }}
             </div>
         </div>
     }

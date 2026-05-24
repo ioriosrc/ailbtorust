@@ -111,15 +111,10 @@ pub fn MultiImagePanel(
     let display_title = title.unwrap_or_else(|| "Cameras".to_string());
 
     view! {
-        <div class="panel-container multi-image-panel">
-            <div class="panel-toolbar">
-                <span class="panel-title">{display_title}</span>
-            </div>
-            <div class="panel-content multi-image-grid">
-                {topics.into_iter().map(|topic| {
-                    view! { <ImagePanelInner topic=topic /> }
-                }).collect::<Vec<_>>()}
-            </div>
+        <div class="multi-image-grid">
+            {topics.into_iter().map(|topic| {
+                view! { <ImagePanelInner topic=topic /> }
+            }).collect::<Vec<_>>()}
         </div>
     }
 }

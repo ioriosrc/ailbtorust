@@ -202,14 +202,8 @@ pub fn StateTransitionsPanel(#[prop(into)] topic: String) -> impl IntoView {
     });
 
     view! {
-        <div class="panel-container panel-state-transitions">
-            <div class="panel-toolbar">
-                <span class="panel-title">{"State Transitions"}</span>
-                <span class="panel-subtitle">{topic.clone()}</span>
-            </div>
-            <div class="panel-content">
-                <canvas node_ref=canvas_ref class="state-transitions-canvas" />
-            </div>
+        <div class="panel-state-transitions-content">
+            <canvas node_ref=canvas_ref class="state-transitions-canvas" />
         </div>
     }
 }

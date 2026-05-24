@@ -125,19 +125,12 @@ pub fn TeleopPanel() -> impl IntoView {
 
     view! {
         <div
-            class="panel-container panel-teleop"
+            class="teleop-content"
             tabindex="0"
             on:keydown=on_keydown
             on:keyup=on_keyup
         >
-            <div class="panel-toolbar">
-                <span class="panel-title">{"Teleop"}</span>
-                <span class="panel-subtitle">{move || {
-                    if is_active.get() { "ACTIVE" } else { "Idle" }
-                }}</span>
-            </div>
-            <div class="panel-content teleop-content">
-                <div class="teleop-controls">
+            <div class="teleop-controls">
                     // Direction buttons (visual keyboard)
                     <div class="teleop-dpad">
                         <div class="teleop-row">
@@ -206,6 +199,5 @@ pub fn TeleopPanel() -> impl IntoView {
                     </div>
                 </div>
             </div>
-        </div>
     }
 }

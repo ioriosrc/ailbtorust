@@ -898,30 +898,17 @@ pub fn ThreeDeePanel() -> impl IntoView {
     let on_mouseup_clone = on_mouseup.clone();
 
     view! {
-        <div class="panel-container panel-3d">
-            <div class="panel-toolbar">
-                <span class="panel-title">{"3D"}</span>
-                <span class="panel-subtitle">{move || {
-                    let count = point_count.get();
-                    if count > 0 {
-                        format!("{} points", count)
-                    } else {
-                        "No point cloud".to_string()
-                    }
-                }}</span>
-            </div>
-            <div class="panel-content panel-3d-canvas-container">
-                <canvas
-                    node_ref=canvas_ref
-                    class="panel-3d-canvas"
-                    on:mousedown=on_mousedown
-                    on:mousemove=on_mousemove
-                    on:mouseup=on_mouseup
-                    on:mouseleave=on_mouseup_clone
-                    on:wheel=on_wheel
-                    on:contextmenu=move |ev: leptos::ev::MouseEvent| ev.prevent_default()
-                />
-            </div>
+        <div class="panel-3d-canvas-container">
+            <canvas
+                node_ref=canvas_ref
+                class="panel-3d-canvas"
+                on:mousedown=on_mousedown
+                on:mousemove=on_mousemove
+                on:mouseup=on_mouseup
+                on:mouseleave=on_mouseup_clone
+                on:wheel=on_wheel
+                on:contextmenu=move |ev: leptos::ev::MouseEvent| ev.prevent_default()
+            />
         </div>
     }
 }

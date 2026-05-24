@@ -73,14 +73,8 @@ pub fn RawMessagesPanel(#[prop(into)] topic: String) -> impl IntoView {
     });
 
     view! {
-        <div class="panel-container raw-messages-panel">
-            <div class="panel-toolbar">
-                <span class="panel-title">{"Raw Messages"}</span>
-                <span class="panel-topic">{display_topic}</span>
-            </div>
-            <div class="panel-content raw-messages-content">
-                <pre class="raw-message-text">{move || message_info.get()}</pre>
-            </div>
+        <div class="raw-messages-content">
+            <pre class="raw-message-text">{move || message_info.get()}</pre>
         </div>
     }
 }
