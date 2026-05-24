@@ -7,7 +7,7 @@ use wasm_bindgen::JsCast;
 
 use crate::mcap_reader;
 use crate::player::McapPlayer;
-use crate::state::app_state::{use_app_state, set_player};
+use crate::state::app_state::{use_app_state, set_player, get_player};
 
 /// Data source selection dialog.
 #[component]
@@ -172,7 +172,7 @@ pub fn DataSourceDialog() -> impl IntoView {
 }
 
 /// Create player from parsed summary and set it as active.
-fn create_player_from_summary(
+pub fn create_player_from_summary(
     file: web_sys::File,
     summary: mcap_reader::McapSummary,
     state: crate::state::app_state::AppState,
@@ -191,9 +191,21 @@ fn create_player_from_summary(
     state.topic_count.set(topic_count);
     state.message_count.set(summary.statistics.message_count as usize);
 
+    // Reset playback to the beginning
+    state.is_playing.set(false);
+    state.playback_progress.set(0.0);
+    state.current_time_display.set("0:00.000".to_string());
+
     // Create lazy player - INSTANT, no message data loaded yet
     let player = McapPlayer::new_lazy(file, summary, state);
     set_player(player);
+
+    // If URL has a time= parameter, seek to that position
+    if let Some(time_ns) = crate::player::get_url_time_ns() {
+        if let Some(p) = get_player() {
+            p.seek_to_ns(time_ns);
+        }
+    }
 
     log::info!(
         "File opened: {} topics, {} chunks, {:.2}s duration",

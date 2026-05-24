@@ -179,8 +179,16 @@ impl McapPlayer {
             topic_count, chunk_count, duration_secs
         );
 
-        // Trigger initial chunk load for the start of the file
-        player.request_chunks_for_time(start_time_ns);
+        // For small files (< 100MB), preload ALL chunks immediately to avoid
+        // any chunk-boundary stutter during playback.
+        let file_size = inner.borrow().file.size() as usize;
+        if file_size < 100 * 1024 * 1024 {
+            // Load all chunks - use the entire time range
+            player.request_chunks_for_time(start_time_ns);
+        } else {
+            // Large file: only load chunks near the start
+            player.request_chunks_for_time(start_time_ns);
+        }
 
         player
     }
@@ -258,13 +266,11 @@ impl McapPlayer {
     }
 
     pub fn play(&self) {
-        let window = web_sys::window().unwrap();
-        let now = window.performance().unwrap().now();
-
         {
             let mut state = self.inner.borrow_mut();
             state.is_playing = true;
-            state.last_wall_time_ms = now;
+            // Reset wall time so first frame uses 0ms advance (no jump)
+            state.last_wall_time_ms = 0.0;
         }
 
         self.app_state.is_playing.set(true);
@@ -300,8 +306,32 @@ impl McapPlayer {
         self.update_progress();
         self.app_state.frame_tick.set(self.inner.borrow().frame_counter);
 
+        // Update URL time parameter
+        update_url_time(self.inner.borrow().current_time_ns);
+
         // Load chunks for the new time position
         self.request_chunks_for_time(target_ns);
+    }
+
+    /// Seek to an absolute nanosecond timestamp.
+    pub fn seek_to_ns(&self, time_ns: u64) {
+        {
+            let mut state = self.inner.borrow_mut();
+            let start = state.start_time_ns;
+            let end = state.end_time_ns;
+            state.current_time_ns = time_ns.clamp(start, end);
+            let window = web_sys::window().unwrap();
+            state.last_wall_time_ms = window.performance().unwrap().now();
+            state.frame_counter += 1;
+        }
+
+        self.update_time_display();
+        self.update_progress();
+        self.app_state.frame_tick.set(self.inner.borrow().frame_counter);
+
+        update_url_time(self.inner.borrow().current_time_ns);
+
+        self.request_chunks_for_time(time_ns);
     }
 
     pub fn set_speed(&self, speed: f64) {
@@ -309,7 +339,9 @@ impl McapPlayer {
         self.app_state.playback_speed.set(speed);
     }
 
-    /// Request loading chunks that cover the given time (prefetch 5s ahead).
+    /// Request loading chunks that cover the given time.
+    /// For small files (< 100MB), loads ALL remaining chunks.
+    /// For large files, prefetches 10s ahead.
     fn request_chunks_for_time(&self, time_ns: u64) {
         let inner = Rc::clone(&self.inner);
 
@@ -318,17 +350,26 @@ impl McapPlayer {
             if state.loading_in_progress {
                 return;
             }
-            // Load chunks from 1s before to 5s ahead for smooth playback
-            let behind_ns = 1_000_000_000u64;
-            let ahead_ns = 5_000_000_000u64;
-            let start = time_ns.saturating_sub(behind_ns);
-            let end = time_ns.saturating_add(ahead_ns).min(state.end_time_ns);
 
-            let needed: Vec<usize> = mcap_reader::find_chunks_for_time(&state.chunk_indices, start, end)
-                .into_iter()
-                .filter(|idx| !state.loaded_chunk_indices.contains(idx))
-                .take(5) // Load max 5 new chunks at a time
-                .collect();
+            let file_size = state.file.size() as usize;
+            let needed: Vec<usize> = if file_size < 100 * 1024 * 1024 {
+                // Small file: load ALL chunks for seamless playback
+                (0..state.chunk_indices.len())
+                    .filter(|idx| !state.loaded_chunk_indices.contains(idx))
+                    .collect()
+            } else {
+                // Large file: load 10s ahead
+                let behind_ns = 1_000_000_000u64;
+                let ahead_ns = 10_000_000_000u64;
+                let start = time_ns.saturating_sub(behind_ns);
+                let end = time_ns.saturating_add(ahead_ns).min(state.end_time_ns);
+
+                mcap_reader::find_chunks_for_time(&state.chunk_indices, start, end)
+                    .into_iter()
+                    .filter(|idx| !state.loaded_chunk_indices.contains(idx))
+                    .take(10)
+                    .collect()
+            };
             needed
         };
 
@@ -447,12 +488,11 @@ impl McapPlayer {
                         });
                         state.cache_bytes += mem_bytes;
                         state.loaded_chunk_indices.push(chunk_idx);
-                        state.frame_counter += 1;
+                        // Do NOT bump frame_counter or frame_tick here.
+                        // Chunk loading should be invisible to rendering.
+                        // The playback tick loop already fires at 60fps and will
+                        // pick up new messages on the next natural frame.
                     }
-
-                    // Signal frame update
-                    let frame = inner_clone.borrow().frame_counter;
-                    app_state.frame_tick.set(frame);
                 }
                 Err(e) => {
                     log::warn!("Failed to parse chunk {}: {}", chunk_idx, e);
@@ -500,16 +540,19 @@ impl McapPlayer {
         let app_state = self.app_state;
         let closure_holder = Rc::clone(&self._closure);
 
-        let closure = Closure::once(move || {
-            tick_and_schedule(inner, app_state, closure_holder);
-        });
+        // Create a persistent FnMut closure that reuses itself via closure_holder.
+        // This avoids allocating a new Closure per frame (unlike Closure::once).
+        let c = Closure::wrap(Box::new(move || {
+            tick_and_reschedule(&inner, app_state, &closure_holder);
+        }) as Box<dyn FnMut()>);
 
         let window = web_sys::window().unwrap();
         let id = window
-            .request_animation_frame(closure.as_ref().unchecked_ref())
+            .request_animation_frame(c.as_ref().unchecked_ref())
             .unwrap();
         self.inner.borrow_mut().animation_frame_id = Some(id);
-        closure.forget();
+        // Store the closure so it stays alive and can be re-registered each frame
+        *self._closure.borrow_mut() = Some(c);
     }
 
     fn update_time_display(&self) {
@@ -616,11 +659,10 @@ fn load_chunk_from_blob(
                     });
                     state.cache_bytes += mem_bytes;
                     state.loaded_chunk_indices.push(chunk_idx);
-                    state.frame_counter += 1;
+                    // Do NOT bump frame_counter here - let the playback loop handle rendering
                 }
 
-                let frame = inner_clone.borrow().frame_counter;
-                app_state.frame_tick.set(frame);
+                // No frame_tick signal - chunk loading is invisible to rendering
             }
             Err(e) => {
                 log::warn!("Failed to parse chunk {}: {}", chunk_idx, e);
@@ -679,11 +721,175 @@ fn channel_lookup_to_info(lookup: &HashMap<u16, (String, String, String)>) -> Ha
         .collect()
 }
 
-/// Combined tick + schedule-next function.
-fn tick_and_schedule(
-    inner: Rc<RefCell<PlaybackState>>,
+// ============================================================================
+// URL Time Synchronization
+// ============================================================================
+
+thread_local! {
+    static LAST_URL_UPDATE_MS: RefCell<f64> = RefCell::new(0.0);
+}
+
+/// Convert nanoseconds timestamp to RFC3339 string with nanosecond precision.
+/// e.g. "1970-10-01T18:14:06.666040305Z"
+fn ns_to_rfc3339(time_ns: u64) -> String {
+    let secs = time_ns / 1_000_000_000;
+    let nanos = (time_ns % 1_000_000_000) as u32;
+
+    // Break into date/time components
+    let mut remaining_secs = secs;
+
+    // Days since epoch
+    let days = remaining_secs / 86400;
+    remaining_secs %= 86400;
+
+    let hours = remaining_secs / 3600;
+    remaining_secs %= 3600;
+    let minutes = remaining_secs / 60;
+    let seconds = remaining_secs % 60;
+
+    // Convert days to year/month/day (simplified calendar)
+    let (year, month, day) = days_to_date(days);
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
+        year, month, day, hours, minutes, seconds, nanos
+    )
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_date(days: u64) -> (i32, u32, u32) {
+    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // day of era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // year of era [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+
+    (y as i32, m as u32, d as u32)
+}
+
+/// Parse an RFC3339 time string back to nanoseconds.
+/// Supports: "2025-07-01T14:05:09.331293771Z"
+pub fn parse_rfc3339_to_ns(s: &str) -> Option<u64> {
+    let s = s.trim_end_matches('Z').trim_end_matches('z');
+
+    // Split at 'T'
+    let parts: Vec<&str> = s.split('T').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    // Parse date
+    let date_parts: Vec<&str> = parts[0].split('-').collect();
+    if date_parts.len() != 3 {
+        return None;
+    }
+    let year: i32 = date_parts[0].parse().ok()?;
+    let month: u32 = date_parts[1].parse().ok()?;
+    let day: u32 = date_parts[2].parse().ok()?;
+
+    // Parse time
+    let time_str = parts[1];
+    let (time_hms, frac) = if let Some(dot_pos) = time_str.find('.') {
+        (&time_str[..dot_pos], &time_str[dot_pos + 1..])
+    } else {
+        (time_str, "")
+    };
+
+    let time_parts: Vec<&str> = time_hms.split(':').collect();
+    if time_parts.len() != 3 {
+        return None;
+    }
+    let hours: u64 = time_parts[0].parse().ok()?;
+    let minutes: u64 = time_parts[1].parse().ok()?;
+    let seconds: u64 = time_parts[2].parse().ok()?;
+
+    // Parse fractional seconds as nanoseconds
+    let nanos: u64 = if frac.is_empty() {
+        0
+    } else {
+        let padded = format!("{:0<9}", &frac[..frac.len().min(9)]);
+        padded.parse().unwrap_or(0)
+    };
+
+    // Convert date to days since epoch
+    let days = date_to_days(year, month, day);
+
+    let total_secs = days * 86400 + hours * 3600 + minutes * 60 + seconds;
+    Some(total_secs * 1_000_000_000 + nanos)
+}
+
+/// Convert (year, month, day) to days since Unix epoch.
+fn date_to_days(year: i32, month: u32, day: u32) -> u64 {
+    let y = if month <= 2 { year as i64 - 1 } else { year as i64 };
+    let m = if month <= 2 { month as i64 + 9 } else { month as i64 - 3 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let doy = (153 * m as u64 + 2) / 5 + day as u64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era as i64 * 146097 + doe as i64 - 719468;
+    days as u64
+}
+
+/// Update the URL `time=` query parameter using replaceState (no navigation).
+/// Throttled to max once per 500ms.
+pub fn update_url_time(time_ns: u64) {
+    let window = web_sys::window().unwrap();
+    let now = window.performance().unwrap().now();
+
+    let should_update = LAST_URL_UPDATE_MS.with(|last| {
+        let prev = *last.borrow();
+        if now - prev >= 500.0 {
+            *last.borrow_mut() = now;
+            true
+        } else {
+            false
+        }
+    });
+
+    if !should_update {
+        return;
+    }
+
+    let time_str = ns_to_rfc3339(time_ns);
+
+    let location = window.location();
+    let origin = location.origin().unwrap_or_default();
+    let pathname = location.pathname().unwrap_or_default();
+
+    // Build URL manually to avoid UrlSearchParams encoding colons as %3A
+    let new_url = format!("{}{}?time={}", origin, pathname, time_str);
+
+    let history = window.history().unwrap();
+    history
+        .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&new_url))
+        .ok();
+}
+
+/// Read the `time=` query parameter from the current URL.
+/// Returns the parsed nanosecond timestamp if present and valid.
+pub fn get_url_time_ns() -> Option<u64> {
+    let window = web_sys::window()?;
+    let location = window.location();
+    let search = location.search().ok()?;
+
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    let time_str = params.get("time")?;
+
+    parse_rfc3339_to_ns(&time_str)
+}
+
+/// Tick function: advance playback time with smoothing, update UI, and reschedule.
+/// Uses exponential moving average (like original Lichtblick) to eliminate jitter.
+fn tick_and_reschedule(
+    inner: &Rc<RefCell<PlaybackState>>,
     app_state: AppState,
-    closure_holder: Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
+    closure_holder: &Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
 ) {
     let (should_continue, current_time) = {
         let mut state = inner.borrow_mut();
@@ -693,11 +899,24 @@ fn tick_and_schedule(
 
         let window = web_sys::window().unwrap();
         let now = window.performance().unwrap().now();
-        let wall_elapsed_ms = now - state.last_wall_time_ms;
+
+        // Calculate raw elapsed time since last frame.
+        // Use direct wall-clock delta for accurate real-time playback.
+        let raw_elapsed_ms = if state.last_wall_time_ms > 0.0 {
+            now - state.last_wall_time_ms
+        } else {
+            0.0 // First frame: don't advance (just establish baseline)
+        };
         state.last_wall_time_ms = now;
 
-        let capped_ms = wall_elapsed_ms.min(300.0);
-        let advance_ns = (capped_ms * 1_000_000.0 * state.speed) as u64;
+        // Cap to prevent huge jumps after tab-switch, GC pause, or slow frames.
+        // Use a tight cap (50ms = 20fps minimum) to prevent visible jumps.
+        let capped_ms = raw_elapsed_ms.clamp(0.0, 50.0);
+
+        // Apply playback speed and convert directly to nanoseconds.
+        // No smoothing needed: the cap already prevents jumps, and direct
+        // wall-clock tracking gives accurate real-time playback.
+        let advance_ns = (capped_ms * state.speed * 1_000_000.0) as u64;
         state.current_time_ns += advance_ns;
 
         let end = state.end_time_ns;
@@ -713,7 +932,7 @@ fn tick_and_schedule(
         }
     };
 
-    // Update UI signals
+    // Update UI signals (single borrow, compute everything at once)
     {
         let state = inner.borrow();
         let start = state.start_time_ns;
@@ -737,22 +956,43 @@ fn tick_and_schedule(
         app_state.frame_tick.set(frame);
     }
 
-    // Check if we need to load new chunks for current time (prefetch 5s ahead)
+    // Update URL time parameter outside the render-critical path.
+    // Throttled internally to every 500ms, but still avoid calling
+    // performance.now() on every frame - only check every 30 frames.
+    {
+        let frame_counter = inner.borrow().frame_counter;
+        if frame_counter % 30 == 0 {
+            update_url_time(current_time);
+        }
+    }
+
+    // Check if we need to load new chunks for current time (prefetch ahead)
     {
         let state = inner.borrow();
-        let behind_ns = 1_000_000_000u64;
-        let ahead_ns = 5_000_000_000u64;
-        let start = current_time.saturating_sub(behind_ns);
-        let end = current_time.saturating_add(ahead_ns).min(state.end_time_ns);
-        let needed = mcap_reader::find_chunks_for_time(&state.chunk_indices, start, end);
-        let any_missing = needed.iter().any(|idx| !state.loaded_chunk_indices.contains(idx));
-
-        if any_missing && !state.loading_in_progress {
-            let missing: Vec<usize> = needed
+        let file_size = state.file.size() as usize;
+        let (needed, any_missing) = if file_size < 100 * 1024 * 1024 {
+            // Small file: ensure all chunks are loaded
+            let needed: Vec<usize> = (0..state.chunk_indices.len())
+                .filter(|idx| !state.loaded_chunk_indices.contains(idx))
+                .collect();
+            let any = !needed.is_empty();
+            (needed, any)
+        } else {
+            let behind_ns = 1_000_000_000u64;
+            let ahead_ns = 10_000_000_000u64;
+            let start = current_time.saturating_sub(behind_ns);
+            let end = current_time.saturating_add(ahead_ns).min(state.end_time_ns);
+            let needed = mcap_reader::find_chunks_for_time(&state.chunk_indices, start, end);
+            let any = needed.iter().any(|idx| !state.loaded_chunk_indices.contains(idx));
+            let needed: Vec<usize> = needed
                 .into_iter()
                 .filter(|idx| !state.loaded_chunk_indices.contains(idx))
-                .take(3)
                 .collect();
+            (needed, any)
+        };
+
+        if any_missing && !state.loading_in_progress {
+            let missing: Vec<usize> = needed.into_iter().take(5).collect();
             drop(state);
 
             if !missing.is_empty() {
@@ -766,26 +1006,20 @@ fn tick_and_schedule(
                 drop(state);
 
                 let remaining = if missing.len() > 1 { missing[1..].to_vec() } else { Vec::new() };
-                load_chunk_from_blob(Rc::clone(&inner), blob, missing[0], remaining, channel_lookup, app_state);
+                load_chunk_from_blob(Rc::clone(inner), blob, missing[0], remaining, channel_lookup, app_state);
             }
         }
     }
 
     if should_continue {
-        // Schedule next frame
-        let inner2 = Rc::clone(&inner);
-        let closure_holder2 = Rc::clone(&closure_holder);
-
-        let closure = Closure::once(move || {
-            tick_and_schedule(inner2, app_state, closure_holder2);
-        });
-
+        // Reschedule using the same persistent closure (no allocation per frame)
         let window = web_sys::window().unwrap();
-        let id = window
-            .request_animation_frame(closure.as_ref().unchecked_ref())
-            .unwrap();
-        inner.borrow_mut().animation_frame_id = Some(id);
-        *closure_holder.borrow_mut() = Some(closure);
+        if let Some(ref closure) = *closure_holder.borrow() {
+            let id = window
+                .request_animation_frame(closure.as_ref().unchecked_ref())
+                .unwrap();
+            inner.borrow_mut().animation_frame_id = Some(id);
+        }
     }
 }
 

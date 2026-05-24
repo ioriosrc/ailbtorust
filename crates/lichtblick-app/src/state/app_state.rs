@@ -2,11 +2,53 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use leptos::prelude::*;
 use lichtblick_core::settings::ColorScheme;
 
 use crate::player::McapPlayer;
+
+// ============================================================================
+// Per-Panel Configuration
+// ============================================================================
+
+/// Image panel settings (matching Lichtblick's ImageModeConfig).
+#[derive(Clone, Debug)]
+pub struct ImagePanelConfig {
+    pub calibration_topic: Option<String>,
+    pub synchronize: bool,
+    pub flip_horizontal: bool,
+    pub flip_vertical: bool,
+    pub rotation: u16, // 0, 90, 180, 270
+    pub brightness: f64, // 0..100
+    pub contrast: f64,   // 0..100
+    // Scene settings
+    pub scene_render_stats: bool,
+    pub scene_background: String,   // hex color e.g. "#000000"
+    pub scene_label_scale: f64,     // default 1.0
+    pub scene_ignore_collada_up_axis: bool,
+    pub scene_mesh_up_axis: String, // "y_up" or "z_up"
+}
+
+impl Default for ImagePanelConfig {
+    fn default() -> Self {
+        Self {
+            calibration_topic: None,
+            synchronize: false,
+            flip_horizontal: false,
+            flip_vertical: false,
+            rotation: 0,
+            brightness: 50.0,
+            contrast: 50.0,
+            scene_render_stats: false,
+            scene_background: "#000000".to_string(),
+            scene_label_scale: 1.0,
+            scene_ignore_collada_up_axis: false,
+            scene_mesh_up_axis: "y_up".to_string(),
+        }
+    }
+}
 
 thread_local! {
     static PLAYER: RefCell<Option<Rc<McapPlayer>>> = RefCell::new(None);
@@ -159,6 +201,8 @@ pub struct LayoutState {
     pub fullscreen_panel: RwSignal<Option<NodeId>>,
     /// Which panel currently has its settings open in the sidebar (None = no settings shown).
     pub active_settings_panel: RwSignal<Option<NodeId>>,
+    /// Per-panel image configs, keyed by NodeId.
+    pub image_configs: RwSignal<HashMap<NodeId, ImagePanelConfig>>,
 }
 
 impl LayoutState {
@@ -172,6 +216,7 @@ impl LayoutState {
             next_id: RwSignal::new(2),
             fullscreen_panel: RwSignal::new(None),
             active_settings_panel: RwSignal::new(None),
+            image_configs: RwSignal::new(HashMap::new()),
         }
     }
 
@@ -189,6 +234,28 @@ impl LayoutState {
     pub fn set_panel_topic(&self, node_id: NodeId, new_topic: Option<String>) {
         self.tree.update(|tree| {
             set_topic_in_tree(tree, node_id, new_topic);
+        });
+    }
+
+    /// Get image config for a panel (creates default if not present).
+    pub fn get_image_config(&self, node_id: NodeId) -> ImagePanelConfig {
+        self.image_configs.with_untracked(|configs| {
+            configs.get(&node_id).cloned().unwrap_or_default()
+        })
+    }
+
+    /// Update image config for a panel.
+    pub fn update_image_config(&self, node_id: NodeId, f: impl FnOnce(&mut ImagePanelConfig)) {
+        self.image_configs.update(|configs| {
+            let config = configs.entry(node_id).or_insert_with(ImagePanelConfig::default);
+            f(config);
+        });
+    }
+
+    /// Reset image config to defaults.
+    pub fn reset_image_config(&self, node_id: NodeId) {
+        self.image_configs.update(|configs| {
+            configs.insert(node_id, ImagePanelConfig::default());
         });
     }
 

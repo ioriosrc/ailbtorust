@@ -67,6 +67,7 @@ html, body {
     display: flex;
     flex-direction: column;
     height: 100%;
+    position: relative;
 }
 
 .workspace-content {
@@ -1353,6 +1354,50 @@ body.splitter-dragging-v {
     color: var(--text-primary);
 }
 
+.panel-settings-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.panel-settings-menu-wrapper {
+    position: relative;
+}
+
+.panel-settings-menu-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 16px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    line-height: 1;
+}
+
+.panel-settings-menu-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.panel-settings-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 100;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 4px 0;
+    min-width: 100px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.panel-settings-dropdown.open {
+    display: block;
+}
+
 .panel-settings-close {
     background: none;
     border: none;
@@ -1375,16 +1420,48 @@ body.splitter-dragging-v {
 }
 
 .settings-section {
-    padding: 8px 12px;
+    padding: 0;
     border-bottom: 1px solid var(--border-color);
+}
+
+.settings-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
 }
 
 .settings-section-title {
     font-size: 12px;
     font-weight: 600;
     color: var(--text-primary);
-    margin-bottom: 8px;
+    margin: 0;
     cursor: pointer;
+    user-select: none;
+}
+
+.settings-section-menu-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    line-height: 1;
+}
+
+.settings-section-menu-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.settings-section-body {
+    padding: 0 12px 8px 12px;
+}
+
+.settings-section-body.collapsed {
+    display: none;
 }
 
 .settings-row {
@@ -1400,6 +1477,7 @@ body.splitter-dragging-v {
     color: var(--text-secondary);
     white-space: nowrap;
     min-width: 70px;
+    text-align: right;
 }
 
 .settings-select {
@@ -1417,4 +1495,179 @@ body.splitter-dragging-v {
 .settings-select:focus {
     outline: 1px solid var(--accent-primary);
     border-color: var(--accent-primary);
+}
+
+.settings-placeholder {
+    font-size: 11px;
+    padding: 4px 0;
+}
+
+/* Toggle group (Off/On buttons) */
+.toggle-group {
+    display: flex;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.toggle-btn {
+    background: var(--bg-tertiary);
+    border: none;
+    color: var(--text-secondary);
+    font-size: 11px;
+    padding: 3px 12px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.toggle-btn + .toggle-btn {
+    border-left: 1px solid var(--border-color);
+}
+
+.toggle-btn.active {
+    background: var(--accent-primary);
+    color: #fff;
+}
+
+.toggle-btn:hover:not(.active) {
+    background: var(--bg-hover);
+}
+
+/* Rotation toggle (wider buttons) */
+.rotation-toggle .toggle-btn {
+    padding: 3px 8px;
+    font-size: 11px;
+}
+
+/* Slider */
+.settings-slider {
+    flex: 1;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+    max-width: 140px;
+}
+
+.settings-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--text-primary);
+    cursor: pointer;
+}
+
+.settings-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--text-primary);
+    cursor: pointer;
+    border: none;
+}
+
+.settings-slider::-webkit-slider-runnable-track {
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+}
+
+.settings-slider::-moz-range-track {
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+}
+
+/* Color input */
+.settings-color-input {
+    width: 32px;
+    height: 24px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 2px;
+    cursor: pointer;
+    background: transparent;
+}
+
+.settings-color-input::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+
+.settings-color-input::-webkit-color-swatch {
+    border: none;
+    border-radius: 2px;
+}
+
+/* Number input */
+.settings-number-input {
+    width: 60px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 12px;
+    text-align: right;
+}
+
+.settings-number-input:focus {
+    outline: 1px solid var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+/* ============================================================================
+   Drag & Drop Overlay
+   ============================================================================ */
+
+.drag-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 9999;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.7);
+    border: 3px dashed var(--accent-primary);
+    border-radius: 8px;
+    pointer-events: none;
+}
+
+.drag-overlay.visible {
+    display: flex;
+}
+
+.drag-overlay-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+}
+
+.drag-overlay-icon {
+    font-size: 48px;
+    opacity: 0.9;
+}
+
+.drag-overlay-text {
+    font-size: 18px;
+    font-weight: 600;
+    color: #fff;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.drop-loading-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(0, 0, 0, 0.8);
 }

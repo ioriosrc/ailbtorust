@@ -114,16 +114,36 @@ fn PanelSettingsView(node_id: NodeId, node: LayoutNode) -> impl IntoView {
     };
 
     let panel_name = panel_type.display_name().to_string();
+    let panel_menu_open = RwSignal::new(false);
 
     let on_close = move |_: leptos::ev::MouseEvent| {
         layout.active_settings_panel.set(None);
+    };
+
+    let on_panel_menu = move |_: leptos::ev::MouseEvent| {
+        panel_menu_open.update(|v| *v = !*v);
+    };
+
+    let on_reset = move |_: leptos::ev::MouseEvent| {
+        layout.reset_image_config(node_id);
+        panel_menu_open.set(false);
     };
 
     view! {
         <div class="panel-settings">
             <div class="panel-settings-header">
                 <span class="panel-settings-title">{format!("{} panel", panel_name)}</span>
-                <button class="panel-settings-close" on:click=on_close title="Close settings">{"✕"}</button>
+                <div class="panel-settings-header-actions">
+                    <div class="panel-settings-menu-wrapper">
+                        <button class="panel-settings-menu-btn" on:click=on_panel_menu title="Options">{"⋮"}</button>
+                        <div class="panel-settings-dropdown" class:open=move || panel_menu_open.get()>
+                            <div class="panel-menu-item" on:mousedown=on_reset>
+                                <span>{"Reset"}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="panel-settings-close" on:click=on_close title="Close settings">{"✕"}</button>
+                </div>
             </div>
             <div class="panel-settings-body">
                 {match panel_type {
@@ -144,17 +164,37 @@ fn PanelSettingsView(node_id: NodeId, node: LayoutNode) -> impl IntoView {
     }.into_any()
 }
 
-/// Image panel settings - topic selector + image options.
+/// Image panel settings - full settings matching Lichtblick original.
 #[component]
 fn ImageSettings(node_id: NodeId, topic: Option<String>) -> impl IntoView {
     let layout = use_layout_state();
     let current_topic = topic.unwrap_or_default();
+
+    // Get config signal - we track image_configs signal for reactivity
+    let config = move || {
+        layout.image_configs.with(|configs| {
+            configs.get(&node_id).cloned().unwrap_or_default()
+        })
+    };
 
     // Get available image topics from the player
     let image_topics = move || -> Vec<String> {
         get_player().map(|p| {
             p.topics().iter()
                 .filter(|t| is_compressed_image_schema(&t.schema_name))
+                .map(|t| t.name.clone())
+                .collect()
+        }).unwrap_or_default()
+    };
+
+    // Get available calibration topics
+    let calibration_topics = move || -> Vec<String> {
+        get_player().map(|p| {
+            p.topics().iter()
+                .filter(|t| {
+                    t.schema_name.contains("CameraInfo")
+                        || t.schema_name.contains("CameraCalibration")
+                })
                 .map(|t| t.name.clone())
                 .collect()
         }).unwrap_or_default()
@@ -172,20 +212,343 @@ fn ImageSettings(node_id: NodeId, topic: Option<String>) -> impl IntoView {
         }
     };
 
+    let on_calibration_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                let val = select.value();
+                let new_cal = if val.is_empty() { None } else { Some(val) };
+                layout.update_image_config(node_id, move |cfg| {
+                    cfg.calibration_topic = new_cal;
+                });
+            }
+        }
+    };
+
+    let on_sync_change = move |val: bool| {
+        layout.update_image_config(node_id, move |cfg| { cfg.synchronize = val; });
+    };
+
+    let on_flip_h_change = move |val: bool| {
+        layout.update_image_config(node_id, move |cfg| { cfg.flip_horizontal = val; });
+    };
+
+    let on_flip_v_change = move |val: bool| {
+        layout.update_image_config(node_id, move |cfg| { cfg.flip_vertical = val; });
+    };
+
+    let on_rotation_change = move |val: u16| {
+        layout.update_image_config(node_id, move |cfg| { cfg.rotation = val; });
+    };
+
+    let on_brightness_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(val) = input.value().parse::<f64>() {
+                    layout.update_image_config(node_id, move |cfg| { cfg.brightness = val; });
+                }
+            }
+        }
+    };
+
+    let on_contrast_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(val) = input.value().parse::<f64>() {
+                    layout.update_image_config(node_id, move |cfg| { cfg.contrast = val; });
+                }
+            }
+        }
+    };
+
+    // Scene settings
+    let on_render_stats_change = move |val: bool| {
+        layout.update_image_config(node_id, move |cfg| { cfg.scene_render_stats = val; });
+    };
+
+    let on_bg_color_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                let val = input.value();
+                layout.update_image_config(node_id, move |cfg| { cfg.scene_background = val; });
+            }
+        }
+    };
+
+    let on_label_scale_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(val) = input.value().parse::<f64>() {
+                    layout.update_image_config(node_id, move |cfg| { cfg.scene_label_scale = val; });
+                }
+            }
+        }
+    };
+
+    let on_ignore_collada_change = move |val: bool| {
+        layout.update_image_config(node_id, move |cfg| { cfg.scene_ignore_collada_up_axis = val; });
+    };
+
+    let on_mesh_up_axis_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                let val = select.value();
+                layout.update_image_config(node_id, move |cfg| { cfg.scene_mesh_up_axis = val; });
+            }
+        }
+    };
+
+    // Reset handlers
+    let on_reset_general = move |_: leptos::ev::MouseEvent| {
+        layout.update_image_config(node_id, |cfg| {
+            cfg.calibration_topic = None;
+            cfg.synchronize = false;
+            cfg.flip_horizontal = false;
+            cfg.flip_vertical = false;
+            cfg.rotation = 0;
+            cfg.brightness = 50.0;
+            cfg.contrast = 50.0;
+        });
+    };
+
+    let on_reset_scene = move |_: leptos::ev::MouseEvent| {
+        layout.update_image_config(node_id, |cfg| {
+            cfg.scene_render_stats = false;
+            cfg.scene_background = "#000000".to_string();
+            cfg.scene_label_scale = 1.0;
+            cfg.scene_ignore_collada_up_axis = false;
+            cfg.scene_mesh_up_axis = "y_up".to_string();
+        });
+    };
+
+    // Collapsible state
+    let general_open = RwSignal::new(true);
+    let scene_open = RwSignal::new(false);
+    let annotations_open = RwSignal::new(false);
+    let transforms_open = RwSignal::new(false);
+    let topics_open = RwSignal::new(false);
+    let custom_layers_open = RwSignal::new(false);
+
     view! {
+        // General section
         <div class="settings-section">
-            <h4 class="settings-section-title">{"▼ General"}</h4>
-            <div class="settings-row">
-                <label class="settings-label">{"Topic"}</label>
-                <select class="settings-select" on:change=on_topic_change>
-                    <option value="" selected=current_topic_for_view.is_empty()>{"— Select topic —"}</option>
-                    {move || image_topics().into_iter().map(|t| {
-                        let selected = t == current_topic;
-                        let t_val = t.clone();
-                        view! { <option value=t_val selected=selected>{t}</option> }
-                    }).collect::<Vec<_>>()}
-                </select>
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| general_open.update(|v| *v = !*v)>
+                    {move || if general_open.get() { "▼" } else { "▶" }}
+                    " General"
+                </h4>
+                <button class="settings-section-menu-btn" title="Reset" on:click=on_reset_general>{"⋮"}</button>
             </div>
+            <div class="settings-section-body" class:collapsed=move || !general_open.get()>
+                // Topic
+                <div class="settings-row">
+                    <label class="settings-label">{"Topic"}</label>
+                    <select class="settings-select" on:change=on_topic_change>
+                        <option value="" selected=current_topic_for_view.is_empty()>{""}</option>
+                        {move || image_topics().into_iter().map(|t| {
+                            let selected = t == current_topic;
+                            let t_val = t.clone();
+                            view! { <option value=t_val selected=selected>{t}</option> }
+                        }).collect::<Vec<_>>()}
+                    </select>
+                </div>
+                // Calibration
+                <div class="settings-row">
+                    <label class="settings-label">{"Calibration"}</label>
+                    <select class="settings-select" on:change=on_calibration_change>
+                        <option value="" selected=move || config().calibration_topic.is_none()>{"None"}</option>
+                        {move || calibration_topics().into_iter().map(|t| {
+                            let selected = config().calibration_topic.as_deref() == Some(t.as_str());
+                            let t_val = t.clone();
+                            view! { <option value=t_val selected=selected>{t}</option> }
+                        }).collect::<Vec<_>>()}
+                    </select>
+                </div>
+                // Sync annotations
+                <div class="settings-row">
+                    <label class="settings-label">{"Sync annotations"}</label>
+                    {toggle_button_view(move || config().synchronize, on_sync_change)}
+                </div>
+                // Flip horizontal
+                <div class="settings-row">
+                    <label class="settings-label">{"Flip horizontal"}</label>
+                    {toggle_button_view(move || config().flip_horizontal, on_flip_h_change)}
+                </div>
+                // Flip vertical
+                <div class="settings-row">
+                    <label class="settings-label">{"Flip vertical"}</label>
+                    {toggle_button_view(move || config().flip_vertical, on_flip_v_change)}
+                </div>
+                // Rotation
+                <div class="settings-row">
+                    <label class="settings-label">{"Rotation"}</label>
+                    {rotation_toggle_view(move || config().rotation, on_rotation_change)}
+                </div>
+                // Brightness
+                <div class="settings-row">
+                    <label class="settings-label">{"Brightness"}</label>
+                    <input
+                        type="range"
+                        class="settings-slider"
+                        min="0" max="100" step="5"
+                        prop:value=move || config().brightness.to_string()
+                        on:input=on_brightness_change
+                    />
+                </div>
+                // Contrast
+                <div class="settings-row">
+                    <label class="settings-label">{"Contrast"}</label>
+                    <input
+                        type="range"
+                        class="settings-slider"
+                        min="0" max="100" step="5"
+                        prop:value=move || config().contrast.to_string()
+                        on:input=on_contrast_change
+                    />
+                </div>
+            </div>
+        </div>
+
+        // Scene section
+        <div class="settings-section">
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| scene_open.update(|v| *v = !*v)>
+                    {move || if scene_open.get() { "▼" } else { "▶" }}
+                    " Scene"
+                </h4>
+                <button class="settings-section-menu-btn" title="Reset" on:click=on_reset_scene>{"⋮"}</button>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !scene_open.get()>
+                // Render stats
+                <div class="settings-row">
+                    <label class="settings-label">{"Render stats"}</label>
+                    {toggle_button_view(move || config().scene_render_stats, on_render_stats_change)}
+                </div>
+                // Background color
+                <div class="settings-row">
+                    <label class="settings-label">{"Background"}</label>
+                    <input
+                        type="color"
+                        class="settings-color-input"
+                        prop:value=move || config().scene_background.clone()
+                        on:input=on_bg_color_change
+                    />
+                </div>
+                // Label scale
+                <div class="settings-row">
+                    <label class="settings-label">{"Label scale"}</label>
+                    <input
+                        type="number"
+                        class="settings-number-input"
+                        min="0" step="0.1"
+                        prop:value=move || config().scene_label_scale.to_string()
+                        on:change=on_label_scale_change
+                    />
+                </div>
+                // Ignore COLLADA up axis
+                <div class="settings-row">
+                    <label class="settings-label">{"Ignore COLLADA <up_axis>"}</label>
+                    {toggle_button_view(move || config().scene_ignore_collada_up_axis, on_ignore_collada_change)}
+                </div>
+                // Mesh up axis
+                <div class="settings-row">
+                    <label class="settings-label">{"Mesh up axis"}</label>
+                    <select class="settings-select" on:change=on_mesh_up_axis_change>
+                        <option value="y_up" selected=move || config().scene_mesh_up_axis == "y_up">{"Y-up"}</option>
+                        <option value="z_up" selected=move || config().scene_mesh_up_axis == "z_up">{"Z-up"}</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        // Image annotations section
+        <div class="settings-section">
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| annotations_open.update(|v| *v = !*v)>
+                    {move || if annotations_open.get() { "▼" } else { "▶" }}
+                    " Image annotations"
+                </h4>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !annotations_open.get()>
+                <p class="text-muted settings-placeholder">{"No annotation topics available"}</p>
+            </div>
+        </div>
+
+        // Transforms section
+        <div class="settings-section">
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| transforms_open.update(|v| *v = !*v)>
+                    {move || if transforms_open.get() { "▼" } else { "▶" }}
+                    " Transforms"
+                </h4>
+                <button class="settings-section-menu-btn" title="Options">{"⋮"}</button>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !transforms_open.get()>
+                <p class="text-muted settings-placeholder">{"No transforms available"}</p>
+            </div>
+        </div>
+
+        // Topics section
+        <div class="settings-section">
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| topics_open.update(|v| *v = !*v)>
+                    {move || if topics_open.get() { "▼" } else { "▶" }}
+                    " Topics"
+                </h4>
+                <button class="settings-section-menu-btn" title="Options">{"⋮"}</button>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !topics_open.get()>
+                <p class="text-muted settings-placeholder">{"No topic layers configured"}</p>
+            </div>
+        </div>
+
+        // Custom layers section
+        <div class="settings-section">
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| custom_layers_open.update(|v| *v = !*v)>
+                    {move || if custom_layers_open.get() { "▼" } else { "▶" }}
+                    " Custom layers"
+                </h4>
+                <button class="settings-section-menu-btn" title="Options">{"⋮"}</button>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !custom_layers_open.get()>
+                <p class="text-muted settings-placeholder">{"No custom layers"}</p>
+            </div>
+        </div>
+    }
+}
+
+/// Off/On toggle button widget - inline helper returns view fragment.
+fn toggle_button_view(
+    value: impl Fn() -> bool + 'static + Copy + Send + Sync,
+    on_change: impl Fn(bool) + 'static + Copy + Send + Sync,
+) -> impl IntoView {
+    view! {
+        <div class="toggle-group">
+            <button
+                class="toggle-btn"
+                class:active=move || !value()
+                on:click=move |_| on_change(false)
+            >{"Off"}</button>
+            <button
+                class="toggle-btn"
+                class:active=move || value()
+                on:click=move |_| on_change(true)
+            >{"On"}</button>
+        </div>
+    }
+}
+
+/// Rotation toggle with 4 options - inline helper.
+fn rotation_toggle_view(
+    value: impl Fn() -> u16 + 'static + Copy + Send + Sync,
+    on_change: impl Fn(u16) + 'static + Copy + Send + Sync,
+) -> impl IntoView {
+    view! {
+        <div class="toggle-group rotation-toggle">
+            <button class="toggle-btn" class:active=move || value() == 0 on:click=move |_| on_change(0)>{"0°"}</button>
+            <button class="toggle-btn" class:active=move || value() == 90 on:click=move |_| on_change(90)>{"90°"}</button>
+            <button class="toggle-btn" class:active=move || value() == 180 on:click=move |_| on_change(180)>{"180°"}</button>
+            <button class="toggle-btn" class:active=move || value() == 270 on:click=move |_| on_change(270)>{"270°"}</button>
         </div>
     }
 }

@@ -18,7 +18,7 @@ use crate::panels::three_dee_panel::{is_point_cloud_schema, ThreeDeePanel};
 use crate::panels::topic_list::TopicList;
 use crate::state::app_state::{
     get_player, use_app_state, use_layout_state,
-    LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
+    LayoutNode, NodeId, PanelType, SplitDirection,
 };
 
 /// Panel layout manager.
@@ -353,7 +353,7 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
                 </div>
             </div>
             <div class="panel-content">
-                <PanelContent panel_type=panel_type topic=topic />
+                <PanelContent panel_type=panel_type topic=topic node_id=node_id />
             </div>
         </div>
     }.into_any()
@@ -361,14 +361,14 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
 
 /// Render the actual panel content based on type.
 #[component]
-fn PanelContent(panel_type: PanelType, topic: Option<String>) -> impl IntoView {
+fn PanelContent(panel_type: PanelType, topic: Option<String>, node_id: NodeId) -> impl IntoView {
     match panel_type {
         PanelType::Image => {
             let t = topic.unwrap_or_default();
             if t.is_empty() {
                 view! { <div class="panel-empty">{"Select an image topic"}</div> }.into_any()
             } else {
-                view! { <ImagePanel topic=t /> }.into_any()
+                view! { <ImagePanel topic=t node_id=node_id /> }.into_any()
             }
         }
         PanelType::ThreeDee => view! { <ThreeDeePanel /> }.into_any(),
