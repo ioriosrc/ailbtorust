@@ -89,6 +89,7 @@ pub fn ImagePanel(
     let img_ready_for_effect = Rc::clone(&img_ready);
     let prev_url_for_effect = Rc::clone(&prev_url);
     let pending_url_for_effect = Rc::clone(&pending_url);
+
     Effect::new(move |_| {
         let _tick = frame_tick.get();
 
@@ -99,19 +100,20 @@ pub fn ImagePanel(
 
         let msg = match player.get_current_message(&topic_for_effect) {
             Some(m) => m,
-            None => return,
+            None => {
+                // No message available (chunks may not be loaded yet).
+                // Reset last_time so when a message arrives, it won't be rejected.
+                last_time.set(0);
+                return;
+            },
         };
 
-        // Only update if timestamp changed AND is monotonically forward.
+        // Only update if timestamp actually changed (avoid redundant decodes).
         let prev_time = last_time.get_untracked();
         if msg.log_time_ns == prev_time {
             return;
         }
-        if msg.log_time_ns < prev_time {
-            if prev_time - msg.log_time_ns < 100_000_000 {
-                return;
-            }
-        }
+
         last_time.set(msg.log_time_ns);
 
         // Decode the compressed image
@@ -162,7 +164,6 @@ pub fn ImagePanel(
             // Store current src for revocation after new one loads
             let current_src = el.src();
             if !current_src.is_empty() && current_src.starts_with("blob:") {
-                // Revoke whatever was in prev_url (the one before current)
                 if let Some(old) = prev_url_for_effect.take() {
                     web_sys::Url::revoke_object_url(&old).ok();
                 }

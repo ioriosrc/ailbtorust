@@ -5,10 +5,10 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::decoder::is_compressed_image_schema;
-use crate::panels::topic_list::TopicList;
+use crate::components::topic_list::TopicList;
 use crate::state::app_state::{
     get_player, use_app_state, use_layout_state,
-    LayoutNode, NodeId, PanelType,
+    AppState, LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
 };
 
 /// Sidebar component (left or right).
@@ -54,27 +54,99 @@ pub fn Sidebar(
     }
 }
 
-/// Left sidebar content: shows panel settings when a panel is selected, otherwise topic list.
+/// Left sidebar content: tabs (Panel | Topics | Alerts | Layouts).
 #[component]
 fn LeftSidebarContent() -> impl IntoView {
     let state = use_app_state();
+    let layout = use_layout_state();
+    // 0=Panel, 1=Topics, 2=Alerts, 3=Layouts
+    // Default to Topics (1) when a data source is active
+    let active_tab = RwSignal::new(1u8);
+
+    // When a panel's settings gear is clicked, switch to Panel tab
+    Effect::new(move |_| {
+        if layout.active_settings_panel.get().is_some() {
+            active_tab.set(0);
+        }
+    });
+
+    view! {
+        <div class="sidebar-tabs">
+            <div class="sidebar-tab-bar">
+                <button
+                    class="sidebar-tab-btn"
+                    class:active=move || active_tab.get() == 0
+                    on:click=move |_| active_tab.set(0)
+                >{"Panel"}</button>
+                <button
+                    class="sidebar-tab-btn"
+                    class:active=move || active_tab.get() == 1
+                    on:click=move |_| active_tab.set(1)
+                >{"Topics"}</button>
+                <button
+                    class="sidebar-tab-btn"
+                    class:active=move || active_tab.get() == 2
+                    on:click=move |_| active_tab.set(2)
+                >{"Alerts"}</button>
+                <button
+                    class="sidebar-tab-btn"
+                    class:active=move || active_tab.get() == 3
+                    on:click=move |_| active_tab.set(3)
+                >{"Layouts"}</button>
+            </div>
+            <div class="sidebar-tab-content">
+                {move || match active_tab.get() {
+                    0 => view! { <PanelTabContent /> }.into_any(),
+                    1 => view! { <TopicsTabContent /> }.into_any(),
+                    2 => view! { <AlertsTabContent /> }.into_any(),
+                    3 => view! { <LayoutsTabContent /> }.into_any(),
+                    _ => view! { <div></div> }.into_any(),
+                }}
+            </div>
+        </div>
+    }
+}
+
+/// Panel tab: shows "Select a panel" or the panel's settings.
+#[component]
+fn PanelTabContent() -> impl IntoView {
     let layout = use_layout_state();
 
     view! {
         {move || {
             let settings_panel = layout.active_settings_panel.get();
             if let Some(panel_id) = settings_panel {
-                // Show settings for the selected panel
                 let tree = layout.tree.get();
                 if let Some(node) = find_panel_in_tree(&tree, panel_id) {
                     view! { <PanelSettingsView node_id=panel_id node=node /> }.into_any()
                 } else {
-                    // Panel was removed
                     layout.active_settings_panel.set(None);
-                    view! { <FallbackContent /> }.into_any()
+                    view! {
+                        <div class="sidebar-empty">
+                            <p>{"Select a panel to edit its settings."}</p>
+                        </div>
+                    }.into_any()
                 }
-            } else if state.has_active_layout.get() {
-                view! { <FallbackContent /> }.into_any()
+            } else {
+                view! {
+                    <div class="sidebar-empty">
+                        <p>{"Select a panel to edit its settings."}</p>
+                    </div>
+                }.into_any()
+            }
+        }}
+    }
+}
+
+/// Topics tab: topic list with Hz and message count.
+#[component]
+fn TopicsTabContent() -> impl IntoView {
+    let state = use_app_state();
+
+    view! {
+        {move || {
+            if state.has_active_layout.get() {
+                view! { <TopicList /> }.into_any()
             } else {
                 view! {
                     <div class="sidebar-empty">
@@ -86,10 +158,386 @@ fn LeftSidebarContent() -> impl IntoView {
     }
 }
 
-/// Default sidebar content when no panel settings are open.
+/// Alerts tab: shows performance and data alerts.
 #[component]
-fn FallbackContent() -> impl IntoView {
-    view! { <TopicList /> }
+fn AlertsTabContent() -> impl IntoView {
+    let state = use_app_state();
+
+    // Log schemas that are excluded from the high-frequency check
+    let is_log_schema = |schema: &str| -> bool {
+        matches!(schema,
+            "rosgraph_msgs/Log" | "rosgraph_msgs/msg/Log" |
+            "rcl_interfaces/msg/Log" | "foxglove.Log"
+        )
+    };
+
+    view! {
+        <div class="alerts-list">
+            {move || {
+                let _tick = state.frame_tick.get();
+                let player = match get_player() {
+                    Some(p) => p,
+                    None => return view! {
+                        <div class="sidebar-empty">
+                            <p>{"No alerts."}</p>
+                        </div>
+                    }.into_any(),
+                };
+
+                let topics = player.topics();
+                let stats = player.topic_stats();
+                let (start_ns, end_ns) = player.time_range();
+                let duration_secs = (end_ns.saturating_sub(start_ns)) as f64 / 1_000_000_000.0;
+
+                let mut alerts: Vec<(String, String, String)> = Vec::new(); // (severity, title, message)
+
+                // Check for high-frequency topics (> 60 Hz)
+                if duration_secs > 0.0 {
+                    let has_high_freq = topics.iter().any(|t| {
+                        if t.schema_name.is_empty() || is_log_schema(&t.schema_name) {
+                            return false;
+                        }
+                        if let Some(&(count, _)) = stats.get(&t.name) {
+                            if count >= 2 {
+                                let freq = (count as f64 - 1.0) / duration_secs;
+                                return freq > 60.0;
+                            }
+                        }
+                        false
+                    });
+
+                    if has_high_freq {
+                        alerts.push((
+                            "warn".to_string(),
+                            "High frequency topics detected".to_string(),
+                            "The current data source has one or more topics with message frequency higher than 60Hz, which may impact performance and application memory.".to_string(),
+                        ));
+                    }
+                }
+
+                if alerts.is_empty() {
+                    return view! {
+                        <div class="sidebar-empty">
+                            <p>{"No alerts."}</p>
+                        </div>
+                    }.into_any();
+                }
+
+                view! {
+                    <div class="alerts-items">
+                        {alerts.into_iter().map(|(severity, title, message)| {
+                            let icon = match severity.as_str() {
+                                "warn" => "⚠️",
+                                "error" => "❌",
+                                _ => "ℹ️",
+                            };
+                            view! {
+                                <div class={format!("alert-item alert-{}", severity)}>
+                                    <div class="alert-header">
+                                        <span class="alert-icon">{icon}</span>
+                                        <span class="alert-title">{title}</span>
+                                    </div>
+                                    <p class="alert-message">{message}</p>
+                                </div>
+                            }
+                        }).collect_view()}
+                    </div>
+                }.into_any()
+            }}
+        </div>
+    }
+}
+
+/// Layouts tab: manage saved layouts.
+#[component]
+fn LayoutsTabContent() -> impl IntoView {
+    let layout = use_layout_state();
+    let state = use_app_state();
+
+    let on_create_new = move |_: leptos::ev::MouseEvent| {
+        // Create a default layout (current state is already the layout)
+        // In a full implementation this would prompt for a name and save to localStorage
+        let window = web_sys::window().unwrap();
+        if let Ok(Some(storage)) = window.local_storage() {
+            let layout_json = export_layout_json(&layout);
+            let name = format!("Layout {}", js_sys::Date::new_0().to_locale_time_string("en-US"));
+            let key = format!("layout:{}", name);
+            storage.set_item(&key, &layout_json).ok();
+        }
+    };
+
+    let on_import = move |_: leptos::ev::MouseEvent| {
+        // Trigger file input for JSON import
+        let document = web_sys::window().unwrap().document().unwrap();
+        let input = document.create_element("input").unwrap();
+        let input: web_sys::HtmlInputElement = input.dyn_into().unwrap();
+        input.set_type("file");
+        input.set_attribute("accept", ".json").ok();
+
+        let layout_clone = layout;
+        let state_clone = state;
+        let input_clone = input.clone();
+        let onchange = wasm_bindgen::closure::Closure::once(move |_: web_sys::Event| {
+            let files = input_clone.files().unwrap();
+            if let Some(file) = files.get(0) {
+                let reader = web_sys::FileReader::new().unwrap();
+                let reader_clone = reader.clone();
+                let layout_for_load = layout_clone;
+                let state_for_load = state_clone;
+                let onload = wasm_bindgen::closure::Closure::once(move |_: web_sys::Event| {
+                    if let Ok(result) = reader_clone.result() {
+                        if let Some(text) = result.as_string() {
+                            import_layout_json(&text, &layout_for_load, state_for_load);
+                        }
+                    }
+                });
+                reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+                onload.forget();
+                reader.read_as_text(&file).ok();
+            }
+        });
+        input.set_onchange(Some(onchange.as_ref().unchecked_ref()));
+        onchange.forget();
+        input.click();
+    };
+
+    let on_export = move |_: leptos::ev::MouseEvent| {
+        let json = export_layout_json(&layout);
+        // Create and download the file
+        let blob_parts = js_sys::Array::new();
+        blob_parts.push(&wasm_bindgen::JsValue::from_str(&json));
+        let opts = web_sys::BlobPropertyBag::new();
+        opts.set_type("application/json");
+        let blob = web_sys::Blob::new_with_str_sequence_and_options(&blob_parts, &opts).unwrap();
+        let url = web_sys::Url::create_object_url_with_blob(&blob).unwrap();
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+        let a = document.create_element("a").unwrap();
+        a.set_attribute("href", &url).ok();
+        a.set_attribute("download", "layout.json").ok();
+        let a: web_sys::HtmlElement = a.dyn_into().unwrap();
+        a.click();
+        web_sys::Url::revoke_object_url(&url).ok();
+    };
+
+    // Get saved layouts from localStorage
+    let saved_layouts = move || -> Vec<String> {
+        let window = web_sys::window().unwrap();
+        if let Ok(Some(storage)) = window.local_storage() {
+            let len = storage.length().unwrap_or(0);
+            let mut layouts = Vec::new();
+            for i in 0..len {
+                if let Ok(Some(key)) = storage.key(i) {
+                    if key.starts_with("layout:") {
+                        layouts.push(key[7..].to_string());
+                    }
+                }
+            }
+            layouts
+        } else {
+            Vec::new()
+        }
+    };
+
+    view! {
+        <div class="layouts-list">
+            <div class="layouts-actions">
+                <button class="layout-action-btn" on:click=on_create_new>
+                    <span class="layout-action-icon">{"+"}</span>
+                    {"Create new layout"}
+                </button>
+                <button class="layout-action-btn" on:click=on_import>
+                    <span class="layout-action-icon">{"📁"}</span>
+                    {"Import from file"}
+                </button>
+                <button class="layout-action-btn" on:click=on_export>
+                    <span class="layout-action-icon">{"💾"}</span>
+                    {"Export current layout"}
+                </button>
+            </div>
+            <hr class="layouts-divider" />
+            <div class="layouts-saved">
+                <div class="layout-item layout-item-active">
+                    <span class="layout-item-icon">{"📐"}</span>
+                    <span class="layout-item-name">{"Default"}</span>
+                </div>
+                {move || saved_layouts().into_iter().map(|name| {
+                    let layout_c = layout;
+                    let state_c = state;
+                    let name_clone = name.clone();
+                    let on_load = move |_: leptos::ev::MouseEvent| {
+                        let window = web_sys::window().unwrap();
+                        if let Ok(Some(storage)) = window.local_storage() {
+                            let key = format!("layout:{}", name_clone);
+                            if let Ok(Some(json)) = storage.get_item(&key) {
+                                import_layout_json(&json, &layout_c, state_c);
+                            }
+                        }
+                    };
+                    view! {
+                        <div class="layout-item" on:click=on_load>
+                            <span class="layout-item-icon">{"📐"}</span>
+                            <span class="layout-item-name">{name}</span>
+                        </div>
+                    }
+                }).collect_view()}
+            </div>
+        </div>
+    }
+}
+
+/// Export current layout to JSON (matching Lichtblick format).
+fn export_layout_json(layout: &LayoutState) -> String {
+    let tree = layout.tree.get();
+    let layout_json = layout_node_to_json(&tree);
+    let configs_json = "{}"; // Simplified - could serialize panel configs
+    format!(
+        r#"{{"configById":{configs},"globalVariables":{{}},"userNodes":{{}},"playbackConfig":{{"speed":1}},"layout":{layout}}}"#,
+        configs = configs_json,
+        layout = layout_json
+    )
+}
+
+/// Convert layout tree to JSON string.
+fn layout_node_to_json(node: &LayoutNode) -> String {
+    match node {
+        LayoutNode::Panel { panel_type, .. } => {
+            let type_name = match panel_type {
+                PanelType::Image => "Image",
+                PanelType::ThreeDee => "3D",
+                PanelType::RawMessages => "RawMessages",
+                PanelType::Log => "RosOut",
+                PanelType::Plot => "Plot",
+                PanelType::DataSourceInfo => "DataSourceInfo",
+                PanelType::Diagnostics => "DiagnosticStatusPanel",
+                PanelType::StateTransitions => "StateTransitions",
+                PanelType::Teleop => "Teleop",
+                _ => "Unknown",
+            };
+            // Panel ID format: "Type!random"
+            format!(r#""{}!panel""#, type_name)
+        }
+        LayoutNode::Split { direction, ratio, first, second, .. } => {
+            let dir = match direction {
+                SplitDirection::Horizontal => "row",
+                SplitDirection::Vertical => "column",
+            };
+            format!(
+                r#"{{"first":{},"second":{},"direction":"{}","splitPercentage":{:.1}}}"#,
+                layout_node_to_json(first),
+                layout_node_to_json(second),
+                dir,
+                ratio
+            )
+        }
+    }
+}
+
+/// Import a layout from JSON string.
+fn import_layout_json(json: &str, layout: &LayoutState, _state: AppState) {
+    // Parse the JSON and build a layout tree
+    // Simplified parser - handles the Lichtblick format
+    if let Some(layout_value) = extract_json_field(json, "layout") {
+        if let Some(tree) = parse_layout_node(layout_value, &mut 1) {
+            let next_id = count_nodes(&tree) as u32 + 1;
+            layout.tree.set(tree);
+            layout.next_id.set(next_id);
+        }
+    }
+}
+
+fn count_nodes(node: &LayoutNode) -> usize {
+    match node {
+        LayoutNode::Panel { .. } => 1,
+        LayoutNode::Split { first, second, .. } => 1 + count_nodes(first) + count_nodes(second),
+    }
+}
+
+/// Very simple JSON field extractor (finds "field": value at top level).
+fn extract_json_field<'a>(json: &'a str, field: &str) -> Option<&'a str> {
+    let pattern = format!(r#""{}":"#, field);
+    let start = json.find(&pattern)? + pattern.len();
+    let remaining = &json[start..];
+    // Find the balanced end
+    if remaining.starts_with('"') {
+        // String value
+        let end = remaining[1..].find('"')? + 2;
+        Some(&remaining[..end])
+    } else if remaining.starts_with('{') {
+        // Object value - find matching brace
+        let mut depth = 0;
+        for (i, c) in remaining.chars().enumerate() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&remaining[..=i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    } else {
+        // Primitive
+        let end = remaining.find(&[',', '}'][..]).unwrap_or(remaining.len());
+        Some(&remaining[..end])
+    }
+}
+
+/// Parse a layout node from JSON (simplified).
+fn parse_layout_node(json: &str, next_id: &mut u32) -> Option<LayoutNode> {
+    let json = json.trim();
+    if json.starts_with('"') {
+        // Leaf panel: "PanelType!id"
+        let panel_str = json.trim_matches('"');
+        let panel_type = if panel_str.starts_with("Image") {
+            PanelType::Image
+        } else if panel_str.starts_with("3D") {
+            PanelType::ThreeDee
+        } else if panel_str.starts_with("RawMessages") {
+            PanelType::RawMessages
+        } else if panel_str.starts_with("RosOut") || panel_str.starts_with("Log") {
+            PanelType::Log
+        } else if panel_str.starts_with("Plot") {
+            PanelType::Plot
+        } else if panel_str.starts_with("DataSourceInfo") {
+            PanelType::DataSourceInfo
+        } else {
+            PanelType::RawMessages
+        };
+        let id = *next_id;
+        *next_id += 1;
+        Some(LayoutNode::Panel { id, panel_type, topic: None })
+    } else if json.starts_with('{') {
+        // Split node
+        let first_json = extract_json_field(json, "first")?;
+        let second_json = extract_json_field(json, "second")?;
+        let direction = if json.contains(r#""direction":"row"#) {
+            SplitDirection::Horizontal
+        } else {
+            SplitDirection::Vertical
+        };
+        // Extract splitPercentage
+        let ratio = extract_json_field(json, "splitPercentage")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(50.0);
+
+        let first = parse_layout_node(first_json, next_id)?;
+        let second = parse_layout_node(second_json, next_id)?;
+        let id = *next_id;
+        *next_id += 1;
+        Some(LayoutNode::Split {
+            id,
+            direction,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        })
+    } else {
+        None
+    }
 }
 
 fn find_panel_in_tree(node: &LayoutNode, target_id: NodeId) -> Option<LayoutNode> {

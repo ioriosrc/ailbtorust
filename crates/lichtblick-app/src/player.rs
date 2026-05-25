@@ -84,6 +84,8 @@ struct PlaybackState {
     loaded_chunk_indices: Vec<usize>,
     /// If a chunk load is in progress (async), don't start another.
     loading_in_progress: bool,
+    /// Generation counter - incremented on seek to invalidate stale chunk loads.
+    load_generation: u64,
 }
 
 /// Shared player handle.
@@ -157,6 +159,7 @@ impl McapPlayer {
             frame_counter: 0,
             loaded_chunk_indices: Vec::new(),
             loading_in_progress: false,
+            load_generation: 0,
         };
 
         let inner = Rc::new(RefCell::new(state));
@@ -202,32 +205,37 @@ impl McapPlayer {
     /// Uses binary search through cached chunks for efficiency.
     pub fn get_current_message(&self, topic: &str) -> Option<StoredMessage> {
         let state = self.inner.borrow();
-        let current_ns = state.current_time_ns;
-        let mut best: Option<&StoredMessage> = None;
-
-        for chunk in &state.chunk_cache {
-            let msgs = &chunk.messages;
-            // Binary search: find the position where log_time_ns > current_ns
-            let pos = msgs.partition_point(|m| m.log_time_ns <= current_ns);
-            // Search backwards from pos for the first message matching our topic
-            for i in (0..pos).rev() {
-                if msgs[i].topic == topic {
-                    match best {
-                        Some(b) if msgs[i].log_time_ns > b.log_time_ns => best = Some(&msgs[i]),
-                        None => best = Some(&msgs[i]),
-                        _ => {}
-                    }
-                    break; // This chunk's messages are sorted, first match from rev is best
-                }
-            }
-        }
-
-        best.cloned()
+        state.latest_messages.get(topic).cloned()
     }
 
     /// Get topic list.
     pub fn topics(&self) -> Vec<TopicInfo> {
         self.inner.borrow().topics.clone()
+    }
+
+    /// Get per-topic statistics: message count and frequency (Hz).
+    /// Calculated from loaded chunks in cache.
+    pub fn topic_stats(&self) -> HashMap<String, (u64, f64)> {
+        let state = self.inner.borrow();
+        let duration_ns = state.end_time_ns.saturating_sub(state.start_time_ns);
+        let duration_secs = duration_ns as f64 / 1_000_000_000.0;
+
+        // Use summary channel_message_counts for stable values (doesn't change during playback)
+        let mut result = HashMap::new();
+        for (&channel_id, &count) in &state.summary.statistics.channel_message_counts {
+            if let Some((topic, _, _)) = state.channel_lookup.get(&channel_id) {
+                let hz = if duration_secs > 0.0 && count > 1 {
+                    (count as f64 - 1.0) / duration_secs
+                } else {
+                    0.0
+                };
+                // Accumulate if multiple channels map to same topic
+                let entry = result.entry(topic.clone()).or_insert((0u64, 0.0f64));
+                entry.0 += count;
+                entry.1 += hz;
+            }
+        }
+        result
     }
 
     /// Get messages for a topic within a time range (from loaded chunks only).
@@ -300,6 +308,32 @@ impl McapPlayer {
             let window = web_sys::window().unwrap();
             state.last_wall_time_ms = window.performance().unwrap().now();
             state.frame_counter += 1;
+            // Invalidate any in-flight chunk loads from before this seek
+            state.load_generation += 1;
+            state.loading_in_progress = false;
+
+            // Rebuild latest_messages for the new time position
+            let current_ns = state.current_time_ns;
+            state.latest_messages.clear();
+            let mut updates: Vec<(String, StoredMessage)> = Vec::new();
+            for chunk in &state.chunk_cache {
+                let msgs = &chunk.messages;
+                let pos = msgs.partition_point(|m| m.log_time_ns <= current_ns);
+                let mut seen = std::collections::HashSet::new();
+                for i in (0..pos).rev() {
+                    let msg = &msgs[i];
+                    if !seen.contains(&msg.topic) {
+                        seen.insert(msg.topic.clone());
+                        updates.push((msg.topic.clone(), msg.clone()));
+                    }
+                }
+            }
+            for (topic, msg) in updates {
+                match state.latest_messages.get(&topic) {
+                    Some(existing) if existing.log_time_ns >= msg.log_time_ns => {},
+                    _ => { state.latest_messages.insert(topic, msg); }
+                }
+            }
         }
 
         self.update_time_display();
@@ -323,6 +357,32 @@ impl McapPlayer {
             let window = web_sys::window().unwrap();
             state.last_wall_time_ms = window.performance().unwrap().now();
             state.frame_counter += 1;
+            // Invalidate any in-flight chunk loads from before this seek
+            state.load_generation += 1;
+            state.loading_in_progress = false;
+
+            // Rebuild latest_messages for the new time position
+            let current_ns = state.current_time_ns;
+            state.latest_messages.clear();
+            let mut updates: Vec<(String, StoredMessage)> = Vec::new();
+            for chunk in &state.chunk_cache {
+                let msgs = &chunk.messages;
+                let pos = msgs.partition_point(|m| m.log_time_ns <= current_ns);
+                let mut seen = std::collections::HashSet::new();
+                for i in (0..pos).rev() {
+                    let msg = &msgs[i];
+                    if !seen.contains(&msg.topic) {
+                        seen.insert(msg.topic.clone());
+                        updates.push((msg.topic.clone(), msg.clone()));
+                    }
+                }
+            }
+            for (topic, msg) in updates {
+                match state.latest_messages.get(&topic) {
+                    Some(existing) if existing.log_time_ns >= msg.log_time_ns => {},
+                    _ => { state.latest_messages.insert(topic, msg); }
+                }
+            }
         }
 
         self.update_time_display();
@@ -389,21 +449,16 @@ impl McapPlayer {
         let inner = Rc::clone(&self.inner);
         let app_state = self.app_state;
 
-        let (blob, channel_lookup) = {
+        let (blob, channel_lookup, generation) = {
             let state = inner.borrow();
             let ci = &state.chunk_indices[chunk_idx];
-            // File.slice(start, end) - reads the chunk record from file
-            // chunk_offset points to the chunk record opcode in the file.
-            // We need to read: opcode(1) + length(8) + chunk_data(chunk_length - 9)
-            // Actually chunk_length in ChunkIndex is the full record size including opcode+length
             let start = ci.chunk_offset as f64;
             let end = (ci.chunk_offset + ci.chunk_length) as f64;
             let blob = state.file.slice_with_f64_and_f64(start, end)
                 .unwrap_or_else(|_| {
-                    // Fallback: try reading a bit more
                     state.file.slice_with_f64_and_f64(start, end + 9.0).unwrap()
                 });
-            (blob, state.channel_lookup.clone())
+            (blob, state.channel_lookup.clone(), state.load_generation)
         };
 
         let reader = web_sys::FileReader::new().unwrap();
@@ -415,15 +470,19 @@ impl McapPlayer {
             let uint8_array = js_sys::Uint8Array::new(&array_buffer);
             let chunk_bytes = uint8_array.to_vec();
 
-            // Parse the chunk record
-            // The bytes are: opcode(1) + record_length(8) + record_data
+            // If a seek happened since this load started, discard and stop chain
+            if inner_clone.borrow().load_generation != generation {
+                inner_clone.borrow_mut().loading_in_progress = false;
+                return;
+            }
+
             if chunk_bytes.len() < 9 {
                 log::warn!("Chunk {} too small: {} bytes", chunk_idx, chunk_bytes.len());
                 inner_clone.borrow_mut().loading_in_progress = false;
                 return;
             }
 
-            let _opcode = chunk_bytes[0]; // Should be 0x06 (Chunk)
+            let _opcode = chunk_bytes[0];
             let record_data = &chunk_bytes[9..];
 
             match mcap_reader::parse_chunk_messages(record_data, &channel_lookup_to_info(&channel_lookup)) {
@@ -446,31 +505,9 @@ impl McapPlayer {
 
                     let mem_bytes: usize = messages.iter().map(|m| m.data.len() + 64).sum();
 
-                    log::info!(
-                        "Chunk {} loaded: {} messages, {:.1} MB",
-                        chunk_idx, messages.len(), mem_bytes as f64 / 1_048_576.0
-                    );
-
                     {
                         let mut state = inner_clone.borrow_mut();
                         let current_time = state.current_time_ns;
-
-                        // Update latest_messages cache
-                        for msg in &messages {
-                            let entry = state.latest_messages.entry(msg.topic.clone());
-                            match entry {
-                                std::collections::hash_map::Entry::Vacant(e) => {
-                                    e.insert(msg.clone());
-                                }
-                                std::collections::hash_map::Entry::Occupied(mut e) => {
-                                    if msg.log_time_ns <= current_time
-                                        && msg.log_time_ns > e.get().log_time_ns
-                                    {
-                                        e.insert(msg.clone());
-                                    }
-                                }
-                            }
-                        }
 
                         // Evict old chunks if cache is too large
                         while state.cache_bytes + mem_bytes > MAX_CACHE_BYTES
@@ -481,6 +518,18 @@ impl McapPlayer {
                             state.loaded_chunk_indices.retain(|&i| i != evicted.chunk_idx);
                         }
 
+                        // Update latest_messages cache for newly loaded messages
+                        for msg in &messages {
+                            if msg.log_time_ns <= current_time {
+                                match state.latest_messages.get(&msg.topic) {
+                                    Some(existing) if existing.log_time_ns >= msg.log_time_ns => {},
+                                    _ => {
+                                        state.latest_messages.insert(msg.topic.clone(), msg.clone());
+                                    }
+                                }
+                            }
+                        }
+
                         state.chunk_cache.push(CachedChunk {
                             chunk_idx,
                             messages,
@@ -488,10 +537,6 @@ impl McapPlayer {
                         });
                         state.cache_bytes += mem_bytes;
                         state.loaded_chunk_indices.push(chunk_idx);
-                        // Do NOT bump frame_counter or frame_tick here.
-                        // Chunk loading should be invisible to rendering.
-                        // The playback tick loop already fires at 60fps and will
-                        // pick up new messages on the next natural frame.
                     }
                 }
                 Err(e) => {
@@ -504,11 +549,13 @@ impl McapPlayer {
             if !remaining.is_empty() {
                 let next_idx = remaining[0];
                 let rest = remaining[1..].to_vec();
-                // Schedule next chunk load
                 let inner2 = Rc::clone(&inner_clone);
                 let load_next = Closure::once(move || {
+                    // Check generation before continuing chain
+                    if inner2.borrow().load_generation != generation {
+                        return;
+                    }
                     inner2.borrow_mut().loading_in_progress = true;
-                    // Re-trigger load for next chunk
                     let state = inner2.borrow();
                     let ci = &state.chunk_indices[next_idx];
                     let start = ci.chunk_offset as f64;
@@ -517,7 +564,7 @@ impl McapPlayer {
                     let channel_lookup = state.channel_lookup.clone();
                     drop(state);
 
-                    load_chunk_from_blob(inner2, blob, next_idx, rest, channel_lookup, app_state);
+                    load_chunk_from_blob(inner2, blob, next_idx, rest, channel_lookup, app_state, generation);
                 });
                 web_sys::window()
                     .unwrap()
@@ -589,6 +636,7 @@ fn load_chunk_from_blob(
     remaining: Vec<usize>,
     channel_lookup: HashMap<u16, (String, String, String)>,
     app_state: AppState,
+    generation: u64,
 ) {
     let reader = web_sys::FileReader::new().unwrap();
     let reader_clone = reader.clone();
@@ -598,6 +646,12 @@ fn load_chunk_from_blob(
         let array_buffer = reader_clone.result().unwrap();
         let uint8_array = js_sys::Uint8Array::new(&array_buffer);
         let chunk_bytes = uint8_array.to_vec();
+
+        // If a seek happened since this load started, discard and stop chain
+        if inner_clone.borrow().load_generation != generation {
+            inner_clone.borrow_mut().loading_in_progress = false;
+            return;
+        }
 
         if chunk_bytes.len() < 9 {
             inner_clone.borrow_mut().loading_in_progress = false;
@@ -629,17 +683,13 @@ fn load_chunk_from_blob(
                     let mut state = inner_clone.borrow_mut();
                     let current_time = state.current_time_ns;
                     for msg in &messages {
-                        let entry = state.latest_messages.entry(msg.topic.clone());
-                        match entry {
-                            std::collections::hash_map::Entry::Vacant(e) => {
-                                e.insert(msg.clone());
-                            }
-                            std::collections::hash_map::Entry::Occupied(mut e) => {
-                                if msg.log_time_ns <= current_time
-                                    && msg.log_time_ns > e.get().log_time_ns
-                                {
-                                    e.insert(msg.clone());
-                                }
+                        if msg.log_time_ns > current_time {
+                            continue;
+                        }
+                        match state.latest_messages.get(&msg.topic) {
+                            Some(existing) if existing.log_time_ns >= msg.log_time_ns => {},
+                            _ => {
+                                state.latest_messages.insert(msg.topic.clone(), msg.clone());
                             }
                         }
                     }
@@ -677,6 +727,10 @@ fn load_chunk_from_blob(
             let rest = remaining[1..].to_vec();
             let inner2 = Rc::clone(&inner_clone);
             let load_next = Closure::once(move || {
+                // Check generation before continuing chain
+                if inner2.borrow().load_generation != generation {
+                    return;
+                }
                 inner2.borrow_mut().loading_in_progress = true;
                 let state = inner2.borrow();
                 let ci = &state.chunk_indices[next_idx];
@@ -685,7 +739,7 @@ fn load_chunk_from_blob(
                 let blob = state.file.slice_with_f64_and_f64(start, end).unwrap();
                 let ch_lookup = state.channel_lookup.clone();
                 drop(state);
-                load_chunk_from_blob(inner2, blob, next_idx, rest, ch_lookup, app_state);
+                load_chunk_from_blob(inner2, blob, next_idx, rest, ch_lookup, app_state, generation);
             });
             web_sys::window()
                 .unwrap()
@@ -891,7 +945,7 @@ fn tick_and_reschedule(
     app_state: AppState,
     closure_holder: &Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
 ) {
-    let (should_continue, current_time) = {
+    let (should_continue, current_time, prev_time) = {
         let mut state = inner.borrow_mut();
         if !state.is_playing {
             return;
@@ -914,9 +968,8 @@ fn tick_and_reschedule(
         let capped_ms = raw_elapsed_ms.clamp(0.0, 50.0);
 
         // Apply playback speed and convert directly to nanoseconds.
-        // No smoothing needed: the cap already prevents jumps, and direct
-        // wall-clock tracking gives accurate real-time playback.
         let advance_ns = (capped_ms * state.speed * 1_000_000.0) as u64;
+        let prev_time = state.current_time_ns;
         state.current_time_ns += advance_ns;
 
         let end = state.end_time_ns;
@@ -925,12 +978,40 @@ fn tick_and_reschedule(
             state.is_playing = false;
             app_state.is_playing.set(false);
             state.frame_counter += 1;
-            (false, state.current_time_ns)
+            (false, state.current_time_ns, prev_time)
         } else {
             state.frame_counter += 1;
-            (true, state.current_time_ns)
+            (true, state.current_time_ns, prev_time)
         }
     };
+
+    // Update latest_messages incrementally: only scan messages in the narrow
+    // time window (prev_time..current_time]. Typically just 16ms of messages.
+    // This is O(new_messages) instead of O(all_chunks × binary_search).
+    {
+        let mut state = inner.borrow_mut();
+        let current_ns = current_time;
+        let prev_ns = prev_time;
+        // Collect updates first to avoid borrowing conflict
+        let mut updates: Vec<(String, StoredMessage)> = Vec::new();
+        for chunk in &state.chunk_cache {
+            let msgs = &chunk.messages;
+            // Find messages in range (prev_ns, current_ns]
+            let start_pos = msgs.partition_point(|m| m.log_time_ns <= prev_ns);
+            let end_pos = msgs.partition_point(|m| m.log_time_ns <= current_ns);
+            for i in start_pos..end_pos {
+                let msg = &msgs[i];
+                updates.push((msg.topic.clone(), msg.clone()));
+            }
+        }
+        // Apply updates
+        for (topic, msg) in updates {
+            match state.latest_messages.get(&topic) {
+                Some(existing) if existing.log_time_ns >= msg.log_time_ns => {},
+                _ => { state.latest_messages.insert(topic, msg); }
+            }
+        }
+    }
 
     // Update UI signals (single borrow, compute everything at once)
     {
@@ -993,6 +1074,7 @@ fn tick_and_reschedule(
 
         if any_missing && !state.loading_in_progress {
             let missing: Vec<usize> = needed.into_iter().take(5).collect();
+            let gen = state.load_generation;
             drop(state);
 
             if !missing.is_empty() {
@@ -1006,7 +1088,7 @@ fn tick_and_reschedule(
                 drop(state);
 
                 let remaining = if missing.len() > 1 { missing[1..].to_vec() } else { Vec::new() };
-                load_chunk_from_blob(Rc::clone(inner), blob, missing[0], remaining, channel_lookup, app_state);
+                load_chunk_from_blob(Rc::clone(inner), blob, missing[0], remaining, channel_lookup, app_state, gen);
             }
         }
     }

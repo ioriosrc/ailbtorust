@@ -66,6 +66,8 @@ pub struct McapStatistics {
     pub chunk_count: u32,
     pub message_start_time: u64,
     pub message_end_time: u64,
+    /// Per-channel message counts from the Statistics record.
+    pub channel_message_counts: HashMap<u16, u64>,
 }
 
 /// Full summary parsed from the MCAP footer.
@@ -431,11 +433,23 @@ fn parse_statistics_record(data: &[u8]) -> Option<McapStatistics> {
     let message_count = read_u64_le(&data[pos..]); pos += 8;
     let schema_count = read_u16_le(&data[pos..]); pos += 2;
     let channel_count = read_u32_le(&data[pos..]); pos += 4;
-    // attachment_count, metadata_count skipped
+    // attachment_count, metadata_count
     pos += 8; // attachment_count(4) + metadata_count(4)
     let chunk_count = read_u32_le(&data[pos..]); pos += 4;
     let message_start_time = read_u64_le(&data[pos..]); pos += 8;
-    let message_end_time = read_u64_le(&data[pos..]);
+    let message_end_time = read_u64_le(&data[pos..]); pos += 8;
+
+    // Parse channel_message_counts: length-prefixed array of (channel_id: u16, count: u64)
+    let mut channel_message_counts = HashMap::new();
+    if pos + 4 <= data.len() {
+        let map_len = read_u32_le(&data[pos..]) as usize; pos += 4;
+        let map_end = pos + map_len;
+        while pos + 10 <= map_end && pos + 10 <= data.len() {
+            let ch_id = read_u16_le(&data[pos..]); pos += 2;
+            let count = read_u64_le(&data[pos..]); pos += 8;
+            channel_message_counts.insert(ch_id, count);
+        }
+    }
 
     Some(McapStatistics {
         message_count,
@@ -444,6 +458,7 @@ fn parse_statistics_record(data: &[u8]) -> Option<McapStatistics> {
         chunk_count,
         message_start_time,
         message_end_time,
+        channel_message_counts,
     })
 }
 
