@@ -1529,6 +1529,7 @@ body.splitter-dragging-v {
     padding: 8px;
     flex: 1;
     position: relative;
+    font-size: 11px;
 }
 
 .raw-messages-empty {
@@ -1551,7 +1552,7 @@ body.splitter-dragging-v {
 
 .raw-messages-schema-time {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 11px;
+    font-size: inherit;
     color: var(--text-muted);
 }
 
@@ -1561,7 +1562,7 @@ body.splitter-dragging-v {
     border-radius: 4px;
     padding: 2px 6px;
     cursor: pointer;
-    font-size: 12px;
+    font-size: inherit;
     color: var(--text-secondary);
 }
 
@@ -1572,7 +1573,7 @@ body.splitter-dragging-v {
 
 .raw-messages-json-tree {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 11px;
+    font-size: inherit;
     line-height: 1.6;
 }
 
@@ -1601,7 +1602,7 @@ body.splitter-dragging-v {
 
 .raw-messages-text {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 11px;
+    font-size: inherit;
     line-height: 1.5;
     color: var(--text-secondary);
     white-space: pre;
@@ -1611,7 +1612,7 @@ body.splitter-dragging-v {
 
 .raw-message-text {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 11px;
+    font-size: inherit;
     line-height: 1.4;
     color: var(--text-secondary);
     white-space: pre;

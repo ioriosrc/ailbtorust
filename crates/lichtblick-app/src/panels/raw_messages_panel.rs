@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 
 use crate::cdr_decoder::{self, SchemaMap};
-use crate::state::app_state::{get_player, use_app_state};
+use crate::state::app_state::{get_player, use_app_state, use_layout_state, NodeId};
 
 thread_local! {
     static SCHEMA_CACHE: RefCell<HashMap<String, SchemaMap>> = RefCell::new(HashMap::new());
@@ -18,9 +18,22 @@ thread_local! {
 
 /// Raw Messages panel with topic selector in toolbar and JSON output.
 #[component]
-pub fn RawMessagesPanel(#[prop(into)] topic: String) -> impl IntoView {
+pub fn RawMessagesPanel(#[prop(into)] topic: String, node_id: NodeId) -> impl IntoView {
     let state = use_app_state();
+    let layout = use_layout_state();
     let frame_tick = state.frame_tick;
+
+    // Reactive font size from panel settings
+    let font_size_style = move || {
+        let size = layout.panel_font_sizes.with(|sizes| {
+            sizes.get(&node_id).cloned().unwrap_or_else(|| "Auto".to_string())
+        });
+        if size == "Auto" {
+            String::new()
+        } else {
+            format!("font-size: {}", size)
+        }
+    };
 
     let initial_topic = if topic.is_empty() { String::new() } else { topic };
     let selected_topic = RwSignal::new(initial_topic);
@@ -141,7 +154,7 @@ pub fn RawMessagesPanel(#[prop(into)] topic: String) -> impl IntoView {
             }}
 
             // Message content
-            <div class="raw-messages-content">
+            <div class="raw-messages-content" style=move || font_size_style()>
                 {move || {
                     let json = decoded_json.get();
                     if json.is_null() {
