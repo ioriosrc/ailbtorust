@@ -253,29 +253,29 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
         }
     };
 
-    let toggle_menu = move |_: leptos::ev::MouseEvent| {
+    let menu_pos_top = RwSignal::new(0i32);
+    let menu_pos_left = RwSignal::new(0i32);
+
+    let toggle_menu = move |ev: leptos::ev::MouseEvent| {
         let is_open = menu_open.get_untracked();
-        menu_open.set(!is_open);
         if is_open {
+            menu_open.set(false);
             submenu_open.set(false);
+        } else {
+            // Calculate position from button
+            if let Some(target) = ev.current_target() {
+                let el: web_sys::HtmlElement = target.unchecked_into();
+                let rect = el.get_bounding_client_rect();
+                menu_pos_top.set(rect.bottom() as i32);
+                menu_pos_left.set((rect.right() as i32) - 180);
+            }
+            menu_open.set(true);
         }
     };
 
-    // Close menu on outside click
-    let close_menu = move || {
-        let close = Closure::once(move || {
-            menu_open.set(false);
-            submenu_open.set(false);
-        });
-        web_sys::window().unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                close.as_ref().unchecked_ref(), 150
-            ).ok();
-        close.forget();
-    };
-
-    let on_blur = move |_: leptos::ev::FocusEvent| {
-        close_menu();
+    let close_menu = move |_: leptos::ev::MouseEvent| {
+        menu_open.set(false);
+        submenu_open.set(false);
     };
 
     let on_split_right = move |_: leptos::ev::MouseEvent| {
@@ -315,7 +315,11 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
     };
 
     view! {
-        <div class="panel-container" on:click=on_panel_click>
+        <div
+            class="panel-container"
+            class:panel-selected=move || layout.active_settings_panel.get() == Some(node_id)
+            on:click=on_panel_click
+        >
             <div class="panel-toolbar">
                 <span class="panel-title">{title}</span>
                 {topic.clone().map(|t| view! {
@@ -327,51 +331,62 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
                         class="panel-toolbar-btn panel-menu-trigger"
                         title="Panel menu"
                         on:click=toggle_menu
-                        on:blur=on_blur
                     >{"⋮"}</button>
                 </div>
-                // Context menu dropdown
-                <div class="panel-context-menu" class:panel-context-menu-open=move || menu_open.get()>
-                    <div class="panel-menu-item panel-menu-item-submenu"
-                        on:mouseenter=on_change_hover
-                    >
-                        <span>{"Change panel"}</span>
-                        <span class="menu-arrow">{"›"}</span>
-                        <div class="panel-submenu" class:panel-submenu-open=move || submenu_open.get()>
-                            {PanelType::all().iter().map(|pt| {
-                                let pt_clone = pt.clone();
-                                let name = pt.display_name().to_string();
-                                view! {
-                                    <div class="panel-menu-item"
-                                        on:mousedown=move |_: leptos::ev::MouseEvent| {
-                                            layout.change_panel(node_id, pt_clone.clone());
-                                            menu_open.set(false);
-                                            submenu_open.set(false);
-                                        }
-                                    >
-                                        <span>{name}</span>
-                                    </div>
-                                }
-                            }).collect::<Vec<_>>()}
-                        </div>
-                    </div>
-                    <div class="panel-menu-separator"></div>
-                    <div class="panel-menu-item" on:mousedown=on_split_right>
-                        <span>{"Split right"}</span>
-                    </div>
-                    <div class="panel-menu-item" on:mousedown=on_split_down>
-                        <span>{"Split down"}</span>
-                    </div>
-                    <div class="panel-menu-separator"></div>
-                    <div class="panel-menu-item" on:mousedown=on_fullscreen>
-                        <span>{"Fullscreen"}</span>
-                    </div>
-                    <div class="panel-menu-separator"></div>
-                    <div class="panel-menu-item panel-menu-item-danger" on:mousedown=on_remove>
-                        <span>{"Remove panel"}</span>
-                    </div>
-                </div>
             </div>
+            // Fixed-position context menu (outside toolbar to avoid clipping)
+            {move || {
+                if menu_open.get() {
+                    let top = menu_pos_top.get();
+                    let left = menu_pos_left.get();
+                    let style = format!("position:fixed;top:{}px;left:{}px;z-index:10001;", top, left);
+                    Some(view! {
+                        <div class="panel-menu-backdrop" on:click=close_menu></div>
+                        <div class="panel-context-menu panel-context-menu-open" style=style>
+                            <div class="panel-menu-item panel-menu-item-submenu"
+                                on:mouseenter=on_change_hover
+                            >
+                                <span>{"Change panel"}</span>
+                                <span class="menu-arrow">{"›"}</span>
+                                <div class="panel-submenu" class:panel-submenu-open=move || submenu_open.get()>
+                                    {PanelType::all().iter().map(|pt| {
+                                        let pt_clone = pt.clone();
+                                        let name = pt.display_name().to_string();
+                                        view! {
+                                            <div class="panel-menu-item"
+                                                on:mousedown=move |_: leptos::ev::MouseEvent| {
+                                                    layout.change_panel(node_id, pt_clone.clone());
+                                                    menu_open.set(false);
+                                                    submenu_open.set(false);
+                                                }
+                                            >
+                                                <span>{name}</span>
+                                            </div>
+                                        }
+                                    }).collect::<Vec<_>>()}
+                                </div>
+                            </div>
+                            <div class="panel-menu-separator"></div>
+                            <div class="panel-menu-item" on:mousedown=on_split_right>
+                                <span>{"Split right"}</span>
+                            </div>
+                            <div class="panel-menu-item" on:mousedown=on_split_down>
+                                <span>{"Split down"}</span>
+                            </div>
+                            <div class="panel-menu-separator"></div>
+                            <div class="panel-menu-item" on:mousedown=on_fullscreen>
+                                <span>{"Fullscreen"}</span>
+                            </div>
+                            <div class="panel-menu-separator"></div>
+                            <div class="panel-menu-item panel-menu-item-danger" on:mousedown=on_remove>
+                                <span>{"Remove panel"}</span>
+                            </div>
+                        </div>
+                    })
+                } else {
+                    None
+                }
+            }}
             <div class="panel-content">
                 <PanelContent panel_type=panel_type topic=topic node_id=node_id />
             </div>

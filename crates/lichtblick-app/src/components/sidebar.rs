@@ -110,10 +110,7 @@ pub fn Sidebar(
                 } else {
                     view! {
                         <div class="sidebar-panel">
-                            <div class="sidebar-section">
-                                <h4>{"Performance"}</h4>
-                                <p class="text-muted">{"Playback stats will appear here"}</p>
-                            </div>
+                            <VariablesPanel />
                         </div>
                     }.into_any()
                 }}
@@ -1453,6 +1450,175 @@ fn TopicSelectSettings(node_id: NodeId, topic: Option<String>, #[prop(into)] lab
                         view! { <option value=t_val selected=selected>{t}</option> }
                     }).collect::<Vec<_>>()}
                 </select>
+            </div>
+        </div>
+    }
+}
+
+// ============================================================================
+// Variables Panel (right sidebar)
+// ============================================================================
+
+/// Variables panel for the right sidebar.
+#[component]
+fn VariablesPanel() -> impl IntoView {
+    let state = use_app_state();
+    let editing_idx = RwSignal::new(Option::<usize>::None);
+    let edit_name = RwSignal::new(String::new());
+    let edit_value = RwSignal::new(String::new());
+
+    let on_add = move |_: leptos::ev::MouseEvent| {
+        state.global_variables.update(|vars| {
+            // Generate a unique name
+            let mut i = 1u32;
+            let name = loop {
+                let candidate = format!("var{}", i);
+                if !vars.iter().any(|(n, _)| *n == candidate) {
+                    break candidate;
+                }
+                i += 1;
+            };
+            vars.push((name, "\"\"".to_string()));
+        });
+        // Start editing the new variable
+        let len = state.global_variables.get_untracked().len();
+        editing_idx.set(Some(len - 1));
+        let vars = state.global_variables.get_untracked();
+        if let Some((name, value)) = vars.last() {
+            edit_name.set(name.clone());
+            edit_value.set(value.clone());
+        }
+    };
+
+    let on_edit_start = move |idx: usize| {
+        let vars = state.global_variables.get_untracked();
+        if let Some((name, value)) = vars.get(idx) {
+            edit_name.set(name.clone());
+            edit_value.set(value.clone());
+            editing_idx.set(Some(idx));
+        }
+    };
+
+    let on_edit_confirm = move |_: leptos::ev::MouseEvent| {
+        if let Some(idx) = editing_idx.get_untracked() {
+            let name = edit_name.get_untracked().trim().to_string();
+            let value = edit_value.get_untracked();
+            if !name.is_empty() {
+                state.global_variables.update(|vars| {
+                    if idx < vars.len() {
+                        vars[idx] = (name, value);
+                    }
+                });
+            }
+        }
+        editing_idx.set(None);
+    };
+
+    let on_edit_cancel = move |_: leptos::ev::MouseEvent| {
+        editing_idx.set(None);
+    };
+
+    let on_delete = move |idx: usize| {
+        state.global_variables.update(|vars| {
+            if idx < vars.len() {
+                vars.remove(idx);
+            }
+        });
+        editing_idx.set(None);
+    };
+
+    view! {
+        <div class="variables-panel">
+            <div class="variables-header">
+                <h4 class="variables-title">{"Variables"}</h4>
+                <button class="variables-add-btn" on:click=on_add title="Add variable">
+                    {"+ Add variable"}
+                </button>
+            </div>
+            <div class="variables-list">
+                {move || {
+                    let vars = state.global_variables.get();
+                    let current_editing = editing_idx.get();
+                    if vars.is_empty() {
+                        return view! {
+                            <div class="variables-empty">
+                                <p>{"No variables defined."}</p>
+                                <p class="text-muted variables-hint">
+                                    {"Variables are key/value pairs accessible to all panels via $variable_name in message paths."}
+                                </p>
+                            </div>
+                        }.into_any();
+                    }
+                    view! {
+                        <div class="variables-items">
+                            {vars.into_iter().enumerate().map(|(idx, (name, value))| {
+                                let is_editing = current_editing == Some(idx);
+                                if is_editing {
+                                    let on_name_input = move |ev: leptos::ev::Event| {
+                                        edit_name.set(leptos::prelude::event_target_value(&ev));
+                                    };
+                                    let on_value_input = move |ev: leptos::ev::Event| {
+                                        edit_value.set(leptos::prelude::event_target_value(&ev));
+                                    };
+                                    view! {
+                                        <div class="variable-item variable-item-editing">
+                                            <div class="variable-edit-row">
+                                                <span class="variable-dollar">{"$"}</span>
+                                                <input
+                                                    type="text"
+                                                    class="variable-name-input"
+                                                    placeholder="name"
+                                                    prop:value=move || edit_name.get()
+                                                    on:input=on_name_input
+                                                />
+                                            </div>
+                                            <div class="variable-edit-row">
+                                                <input
+                                                    type="text"
+                                                    class="variable-value-input"
+                                                    placeholder="value (JSON)"
+                                                    prop:value=move || edit_value.get()
+                                                    on:input=on_value_input
+                                                />
+                                            </div>
+                                            <div class="variable-edit-actions">
+                                                <button class="variable-btn variable-btn-confirm" on:click=on_edit_confirm>{"✓"}</button>
+                                                <button class="variable-btn variable-btn-cancel" on:click=on_edit_cancel>{"✕"}</button>
+                                            </div>
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    let idx_for_edit = idx;
+                                    let idx_for_delete = idx;
+                                    let name_display = name.clone();
+                                    let value_display = value.clone();
+                                    view! {
+                                        <div class="variable-item"
+                                            on:dblclick=move |_| on_edit_start(idx_for_edit)
+                                        >
+                                            <div class="variable-info">
+                                                <span class="variable-name">{format!("${}", name_display)}</span>
+                                                <span class="variable-value">{value_display}</span>
+                                            </div>
+                                            <div class="variable-actions">
+                                                <button
+                                                    class="variable-btn"
+                                                    title="Edit"
+                                                    on:click=move |_| on_edit_start(idx_for_edit)
+                                                >{"✎"}</button>
+                                                <button
+                                                    class="variable-btn variable-btn-danger"
+                                                    title="Delete"
+                                                    on:click=move |_| on_delete(idx_for_delete)
+                                                >{"🗑"}</button>
+                                            </div>
+                                        </div>
+                                    }.into_any()
+                                }
+                            }).collect::<Vec<_>>()}
+                        </div>
+                    }.into_any()
+                }}
             </div>
         </div>
     }

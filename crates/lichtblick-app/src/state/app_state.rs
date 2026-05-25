@@ -942,6 +942,9 @@ pub struct AppState {
 
     /// Currently loaded file name (shown in app bar)
     pub current_file_name: RwSignal<Option<String>>,
+
+    /// Global variables: list of (name, json_value_string) pairs
+    pub global_variables: RwSignal<Vec<(String, String)>>,
 }
 
 /// Provide the global app state to the component tree.
@@ -962,6 +965,7 @@ pub fn provide_app_state() {
         color_scheme: RwSignal::new(ColorScheme::Dark),
         left_sidebar_tab: RwSignal::new(1),
         current_file_name: RwSignal::new(None),
+        global_variables: RwSignal::new(Vec::new()),
     };
 
     provide_context(state);
