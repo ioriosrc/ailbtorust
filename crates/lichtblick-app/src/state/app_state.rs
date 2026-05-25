@@ -445,8 +445,8 @@ pub struct AppState {
 /// Provide the global app state to the component tree.
 pub fn provide_app_state() {
     let state = AppState {
-        left_sidebar_open: RwSignal::new(false),
-        right_sidebar_open: RwSignal::new(false),
+        left_sidebar_open: RwSignal::new(true),
+        right_sidebar_open: RwSignal::new(true),
         data_source_dialog_open: RwSignal::new(false),
         is_playing: RwSignal::new(false),
         playback_progress: RwSignal::new(0.0),

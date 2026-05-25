@@ -3,6 +3,7 @@
 
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 use crate::decoder::is_compressed_image_schema;
 use crate::components::topic_list::TopicList;
@@ -11,18 +12,22 @@ use crate::state::app_state::{
     AppState, LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
 };
 
-/// Sidebar component (left or right).
+/// Sidebar component (left or right) with drag-resizable width.
 #[component]
 pub fn Sidebar(
     #[prop(into)] side: String,
     open: RwSignal<bool>,
 ) -> impl IntoView {
-    let side_clone = side.clone();
+    let side_for_class = side.clone();
     let is_left = side == "left";
     let _state = use_app_state();
 
+    // Custom width (None = use CSS default)
+    let custom_width = RwSignal::new(None::<f64>);
+    let is_dragging = RwSignal::new(false);
+
     let class = move || {
-        let base = format!("sidebar sidebar-{}", side_clone);
+        let base = format!("sidebar sidebar-{}", side_for_class);
         if open.get() {
             format!("{} open", base)
         } else {
@@ -30,8 +35,70 @@ pub fn Sidebar(
         }
     };
 
+    let style = move || {
+        if open.get() {
+            if let Some(w) = custom_width.get() {
+                format!("width: {}px;", w)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    };
+
+    // Resize handle drag logic
+    let side_is_left = is_left;
+    let on_mousedown = move |ev: web_sys::MouseEvent| {
+        ev.prevent_default();
+        is_dragging.set(true);
+
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+
+        // Add dragging class to body to prevent text selection
+        let _ = document.body().unwrap().class_list().add_1("sidebar-resizing");
+
+        let move_cb: Closure<dyn FnMut(web_sys::MouseEvent)> = Closure::new(move |e: web_sys::MouseEvent| {
+            if !is_dragging.get_untracked() {
+                return;
+            }
+            let x = e.client_x() as f64;
+            let new_width = if side_is_left {
+                x
+            } else {
+                let win_width = web_sys::window().unwrap().inner_width().unwrap().as_f64().unwrap();
+                win_width - x
+            };
+            // Clamp between 200 and 600px
+            let clamped = new_width.max(200.0).min(600.0);
+            custom_width.set(Some(clamped));
+        });
+
+        let move_cb_ref = move_cb.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        let _ = document.add_event_listener_with_callback("mousemove", &move_cb_ref);
+
+        // Store closures so they stay alive
+        let up_cb: Closure<dyn FnMut(web_sys::MouseEvent)> = Closure::once(move |_e: web_sys::MouseEvent| {
+            is_dragging.set(false);
+            let doc = web_sys::window().unwrap().document().unwrap();
+            let _ = doc.body().unwrap().class_list().remove_1("sidebar-resizing");
+            let _ = doc.remove_event_listener_with_callback("mousemove", &move_cb_ref);
+            drop(move_cb); // prevent premature drop
+        });
+
+        let mut opts = web_sys::AddEventListenerOptions::new();
+        opts.once(true);
+        let _ = document.add_event_listener_with_callback_and_add_event_listener_options(
+            "mouseup",
+            up_cb.as_ref().unchecked_ref(),
+            &opts,
+        );
+        up_cb.forget(); // safe: runs once then removed
+    };
+
     view! {
-        <aside class=class>
+        <aside class=class style=style>
             <div class="sidebar-content">
                 {if is_left {
                     view! {
@@ -50,6 +117,15 @@ pub fn Sidebar(
                     }.into_any()
                 }}
             </div>
+            {if is_left {
+                view! {
+                    <div class="sidebar-resize-handle" on:mousedown=on_mousedown></div>
+                }.into_any()
+            } else {
+                view! {
+                    <div class="sidebar-resize-handle sidebar-resize-left" on:mousedown=on_mousedown></div>
+                }.into_any()
+            }}
         </aside>
     }
 }
@@ -197,11 +273,8 @@ fn AlertsTabContent() -> impl IntoView {
                         if t.schema_name.is_empty() || is_log_schema(&t.schema_name) {
                             return false;
                         }
-                        if let Some(&(count, _)) = stats.get(&t.name) {
-                            if count >= 2 {
-                                let freq = (count as f64 - 1.0) / duration_secs;
-                                return freq > 60.0;
-                            }
+                        if let Some(&(_count, hz)) = stats.get(&t.name) {
+                            return hz > 60.0;
                         }
                         false
                     });

@@ -1,26 +1,67 @@
 # Lichtblick (Rust/WASM)
 
-A complete port of [Lichtblick](https://github.com/lichtblick-suite/lichtblick) web application to Rust, compiled to WebAssembly.
+A complete port of [Lichtblick](https://github.com/lichtblick-suite/lichtblick) web application to Rust, compiled to WebAssembly. Built with **Leptos 0.7.8** and **Trunk 0.21.14**.
 
-Lichtblick is a robotics data visualization tool supporting MCAP files, ROS bag playback, and live WebSocket connections.
+Lichtblick is a robotics data visualization tool supporting MCAP files with lazy chunk-based loading, real-time playback, and panel-based layout system.
+
+## Current Status
+
+### Working Features
+- **MCAP lazy playback** — instant file open (summary-only), chunks loaded on demand
+- **4-tab sidebar** — Panel settings, Topics (with Hz/count), Alerts (>60Hz), Layouts
+- **Stable topic stats** — Hz and message counts from MCAP Statistics record (never oscillate)
+- **Playback controls** — Play/pause, speed (0.1x–3x), seek via progress bar
+- **Performance alerts** — Warns when topics exceed 60Hz (matches original Lichtblick)
+- **Layout system** — Split panels, create/import/export/load from localStorage
+- **Image panel** — JPEG/PNG/H.264 via Blob URLs (browser-decoded)
+- **3D panel** — WebGL point clouds, TF transforms, markers
+- **Raw Messages panel** — JSON tree view of decoded CDR/ROS1 messages
+- **Additional panels** — Log, Plot, DataSourceInfo, Diagnostics, StateTransitions, Teleop
+
+### Performance Characteristics
+- File open: ~50ms (reads summary only, 132MB MCAP)
+- Playback: 60fps loop, panels update at 30fps (throttled)
+- Memory: 100MB chunk cache cap with LRU eviction
+- Chunk prefetch: 3s ahead, batch of 2 (keeps main thread responsive)
+- Seek: Generation-counter invalidation of stale async loads
 
 ## Architecture
 
 ```
 crates/
-├── lichtblick-core        # Core types: Time, Topic, MessageEvent, Layout, Player types
-├── lichtblick-messages    # Message path parsing and evaluation
-├── lichtblick-mcap        # MCAP file reading and schema parsing
-├── lichtblick-players     # Player implementations (Iterable, WebSocket)
+├── lichtblick-app         # Web UI (Leptos components, player, state)
+│   ├── src/player.rs      # MCAP lazy player (most complex file)
+│   ├── src/mcap_reader.rs # MCAP format parser
+│   ├── src/decoder.rs     # CDR/ROS1 message decoders
+│   ├── src/components/    # Sidebar, toolbar, panel layout
+│   ├── src/panels/        # Panel implementations
+│   └── src/state/         # AppState, LayoutState (reactive signals)
+├── lichtblick-core        # Types: Time, Topic, MessageEvent, PlayerState
+├── lichtblick-messages    # Message path parsing/evaluation
+├── lichtblick-mcap        # MCAP reading (schema parsing, source interface)
+├── lichtblick-players     # Player traits (Iterable, WebSocket)
 ├── lichtblick-datasources # Data source factories
-├── lichtblick-panels      # Panel configs and logic (Plot, 3D, Image, etc.)
-├── lichtblick-theme       # Theme system (dark/light)
-└── lichtblick-app         # Web application (Leptos + WASM)
+├── lichtblick-panels      # Panel config types
+└── lichtblick-theme       # Theme system (dark/light)
 ```
+
+### MCAP Player Pipeline
+
+```
+File.slice() → FileReader → decompress (LZ4/zstd) → parse messages → chunk_cache
+                                                                          ↓
+                              panels ← frame_tick ← tick_and_reschedule ← latest_messages
+```
+
+Key design decisions:
+- **Lazy loading**: Only summary is read on open. Chunks are fetched via browser File API.
+- **Generation counter**: Every seek increments a counter. Stale async loads are discarded.
+- **Collect-then-apply**: Avoids RefCell borrow conflicts in the playback loop.
+- **Stable stats**: Topic Hz/count comes from MCAP footer Statistics record, not runtime counting.
 
 ## Prerequisites
 
-1. **Rust toolchain** (1.75+):
+1. **Rust toolchain** (1.95+):
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
@@ -32,12 +73,7 @@ crates/
 
 3. **Trunk** (WASM build tool & dev server):
    ```bash
-   cargo install trunk
-   ```
-
-4. **wasm-bindgen-cli** (optional, for manual builds):
-   ```bash
-   cargo install wasm-bindgen-cli
+   cargo install trunk --version 0.21.14
    ```
 
 ## Development
@@ -45,13 +81,14 @@ crates/
 ### Run in development mode (with hot reload):
 
 ```bash
-trunk serve --open
+# Must run from project root directory!
+trunk serve --port 8081 --open
 ```
 
 This will:
 - Compile the Rust code to WASM
 - Bundle and serve the web app
-- Open your browser at `http://localhost:8080`
+- Open your browser at `http://localhost:8081`
 - Hot-reload on source changes
 
 ### Build for production:
@@ -72,13 +109,9 @@ cargo test
 cargo test -p lichtblick-messages
 cargo test -p lichtblick-mcap
 cargo test -p lichtblick-core
-
-# Run WASM tests (requires wasm-pack)
-# cargo install wasm-pack
-# wasm-pack test --headless --chrome crates/lichtblick-app
 ```
 
-### Check compilation without building:
+### Check compilation:
 
 ```bash
 cargo check --target wasm32-unknown-unknown
@@ -103,16 +136,6 @@ cargo clippy --target wasm32-unknown-unknown -- -D warnings
 | `lichtblick-theme` | Visual theming | `dark_theme()`, `light_theme()` |
 | `lichtblick-app` | Web UI (Leptos) | `App`, `Workspace`, `PlaybackControls` |
 
-## Features
-
-- **File playback**: Open MCAP files and play back recorded data
-- **Live connections**: Connect to ROS systems via Foxglove WebSocket
-- **24 panel types**: 3D, Plot, Image, Logs, Diagnostics, Map, etc.
-- **Mosaic layout**: Split panels horizontally/vertically
-- **Message path queries**: Filter and navigate nested message data
-- **Dark/Light themes**: Full theme support
-- **Global variables**: Share state between panels
-
 ## Deployment
 
 ### Static hosting (Vercel, Netlify, S3):
@@ -128,6 +151,13 @@ trunk build --release --public-url /
 FROM nginx:alpine
 COPY dist/ /usr/share/nginx/html/
 ```
+
+## Reference
+
+- [Lichtblick original (TypeScript)](https://github.com/lichtblick-suite/lichtblick)
+- [MCAP format specification](https://mcap.dev/spec)
+- [Leptos documentation](https://leptos.dev/)
+- [Trunk documentation](https://trunkrs.dev/)
 
 ## License
 

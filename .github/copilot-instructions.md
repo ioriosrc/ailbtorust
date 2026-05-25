@@ -1,54 +1,134 @@
 # Copilot Agent Instructions for Lichtblick (Rust/WASM)
 
-Welcome to the Lichtblick Rust port! You are assisting in developing a complex web application for robotics data visualization built entirely in Rust, compiled to WebAssembly (WASM), and utilizing the Leptos framework for UI.
+## Project Overview
+A complete port of [Lichtblick](https://github.com/lichtblick-suite/lichtblick) web application to Rust/WebAssembly. Robotics data visualization tool supporting MCAP files with lazy chunk loading, real-time playback, and panel-based layout system.
 
-## Context & Architecture
-- **Language**: Rust (Edition 2021) targeted to `wasm32-unknown-unknown`.
-- **UI Framework**: Leptos (Client-side rendering, `csr` feature).
-- **Core Domain**: Handling robotics data (MCAP files, Foxglove WebSockets).
-- **Sub-crates**: 
-  - `lichtblick-app` (Leptos UI & WebGL)
-  - `lichtblick-core` (Data models, schemas)
-  - `lichtblick-mcap` (MCAP parsing)
-  - `lichtblick-panels` (Visual panels: Plot, 3D, Image, Logs)
-  - `lichtblick-messages` (Message path evaluation)
+## Tech Stack
+- **Language**: Rust 1.95+ → `wasm32-unknown-unknown`
+- **UI Framework**: Leptos 0.7.8 (CSR mode, `csr` feature)
+- **Build Tool**: Trunk 0.21.14
+- **Core Domain**: MCAP file playback, ROS/CDR message decoding, WebGL 3D rendering
 
-## Core Directives
+## Crate Architecture
+```
+crates/
+├── lichtblick-app         # Web UI (Leptos components, player, state management)
+│   ├── src/player.rs      # MCAP lazy player (chunk loading, playback tick, seek)
+│   ├── src/mcap_reader.rs # MCAP format parser (summary, chunks, LZ4/zstd)
+│   ├── src/decoder.rs     # CDR/ROS1 message decoders (image, pointcloud, etc.)
+│   ├── src/components/    # Sidebar tabs, topic list, panel layout, toolbar
+│   ├── src/panels/        # Image, 3D, RawMessages, Plot, Log, Diagnostics, etc.
+│   └── src/state/         # AppState, LayoutState (reactive signals)
+├── lichtblick-core        # Types: Time, Topic, MessageEvent, PlayerState
+├── lichtblick-messages    # Message path parsing/evaluation
+├── lichtblick-mcap        # MCAP reading (schema parsing, source interface)
+├── lichtblick-players     # Player traits (Iterable, WebSocket)
+├── lichtblick-datasources # Data source factories
+├── lichtblick-panels      # Panel config types
+└── lichtblick-theme       # Theme system (dark/light)
+```
 
-1. **Leptos Idioms**: 
-   - Always use Leptos reactive primitives (`Signal`, `RwSignal`, `create_effect`, `create_memo`).
-   - For high-frequency updates (e.g., streaming ROS data at 100Hz+), **avoid** binding reactive signals directly to deep DOM elements if it causes full re-renders. Use `create_render_effect` and mutate `NodeRef` elements directly when performance is critical (like Canvas updates).
-   - Use `move ||` closures for reactive reads in the view macro.
+## Development Commands
+```bash
+# Build check (fast)
+cargo build --target wasm32-unknown-unknown
 
-2. **WASM and FFI**:
-   - Use `web_sys` and `js_sys` for browser APIs.
-   - When passing large arrays to WebGL, prefer `js_sys::Float32Array::view(&rust_slice)` to avoid unnecessary copies across the WASM boundary. Ensure the underlying Rust slice lives long enough during the view!
-   - Handle `.unwrap()` and `.expect()` carefully. In Web UI, a panic crashes the WASM module. Bubble errors up or handle them gracefully using Leptos `<ErrorBoundary>`.
+# Dev server (must run from project root!)
+cd /path/to/ailbtorust && trunk serve --port 8081
 
-3. **Performance First**:
-   - Point cloud decoding and 3D rendering are bottleneck areas. Minimize memory allocations in `update` loops.
-   - Reuse buffers in WebGL. Do not recreate `WebGlBuffer` every frame.
+# Tests
+cargo test
 
-4. **Data Deserialization**:
-   - The app reads MCAP and ROS2 CDR data. Be extremely careful with byte offsets and slices to prevent out-of-bounds panics.
-   - Use crates like `bytemuck` or `zerocopy` when applicable, but remember that WASM is little-endian.
+# Lint
+cargo clippy --target wasm32-unknown-unknown -- -D warnings
+```
 
-5. **Aesthetics & UI**:
-   - Follow the design system in `lichtblick-theme`.
-   - The UI should feel premium, fast, and responsive.
+## MCAP Player Architecture (Critical Knowledge)
 
-6. **Quality Assurance (Lint & Tests)**:
-   - **Always write tests** for new components, data parsing logic, and utilities.
-   - Run `cargo test` to ensure unit tests pass. When testing UI or WASM-specific logic, use `wasm-bindgen-test` and run `wasm-pack test --headless --chrome <crate_name>`.
-   - Before suggesting any final code changes, ensure the code complies with strict linting rules. Run `cargo clippy --target wasm32-unknown-unknown -- -D warnings` and fix any issues.
-   - Never remove existing tests without providing an explicit, valid reason. Code must remain covered and functional.
+### Lazy Loading
+- Only the MCAP summary (footer) is read on file open → instant start
+- Chunks are loaded on-demand via `File.slice()` + `FileReader.readAsArrayBuffer()`
+- Each chunk is decompressed (LZ4/zstd) and messages are stored as `StoredMessage`
 
-## When Asked to Create a Panel
-- Implement the configuration struct in `lichtblick-panels`.
-- Create the component in `lichtblick-app/src/panels/`.
-- Register the panel in the `PanelCatalog`.
-- Handle layout via the Mosaic grid system.
+### Playback Loop (`tick_and_reschedule`)
+1. Advances `current_time_ns` by wall-clock delta × speed
+2. Scans chunk_cache for messages in `(prev_time, current_time]` window
+3. Updates `latest_messages` HashMap (per-topic most recent message)
+4. Fires `frame_tick` signal every 2nd frame (~30fps for panels, 60fps for progress)
+5. Prefetches chunks 3s ahead (large files) or all chunks (small <100MB files)
 
-## When Asked to Debug WebGL
-- Verify that `viewport` is updated dynamically on resize.
-- Verify `requestAnimationFrame` is properly driving the render loop, but only when new data is available or camera moves (to save CPU).
+### Seek Safety
+- `load_generation: u64` counter incremented on every seek
+- All chunk load callbacks check generation before applying results
+- Stale loads (from before seek) are silently discarded
+
+### Performance Rules
+- **Never scan all chunks every frame** - use time-range early-out
+- **Collect-then-apply pattern** for RefCell borrow conflicts
+- **Throttle frame_tick** to reduce reactive cascade
+- **Batch chunk loads** at max 2 per tick to keep main thread responsive
+- **100MB cache cap** - evict oldest chunks to limit scan work
+
+### Topic Stats (must be stable!)
+- Computed from `McapStatistics.channel_message_counts` (parsed from MCAP footer)
+- Formula: `hz = (count - 1) / duration_secs`
+- These values NEVER change during playback (unlike chunk-cache counting)
+
+## Leptos Patterns
+
+### Signals & Reactivity
+```rust
+let state = use_app_state();       // AppState from context
+let layout = use_layout_state();   // LayoutState from context
+let frame_tick = state.frame_tick; // RwSignal<u64> - triggers panel re-renders
+```
+
+### View Requirements
+- Views MUST use owned types: `String`, not `&str` or `&String`
+- Use `.into_any()` when returning different view types from match/if
+- Use `collect_view()` to render iterators in templates
+- `class:active=move || bool_expr` for conditional CSS classes
+
+### Common Borrow Issues
+```rust
+// WRONG: can't iterate chunk_cache while mutating latest_messages (same RefCell)
+for chunk in &state.chunk_cache {
+    state.latest_messages.insert(...); // ERROR!
+}
+
+// CORRECT: collect first, then apply
+let updates: Vec<_> = state.chunk_cache.iter()...collect();
+for (k, v) in updates { state.latest_messages.insert(k, v); }
+```
+
+### Closures & Ownership
+```rust
+// Clone BEFORE moving into closure if you need the value after
+let input_clone = input.clone();
+let closure = Closure::once(move |_| { input_clone.files()... });
+input.set_onchange(...); // Still works - we have the original
+input.click();
+```
+
+## Alerts System
+- Fires when any topic has Hz > 60 (excluding log schemas)
+- Log schemas excluded: `rosgraph_msgs/Log`, `rcl_interfaces/msg/Log`, `foxglove.Log`
+- Message matches Lichtblick original exactly
+
+## Layout System
+- `LayoutNode` enum: `Panel { id, panel_type, topic }` | `Split { id, direction, ratio, first, second }`
+- JSON format matches Lichtblick: `{ configById, layout, playbackConfig, globalVariables }`
+- Saved/loaded from localStorage with `layout:` prefix keys
+
+## When Creating/Modifying Panels
+1. Panel component in `src/panels/` - uses `frame_tick.get()` for reactivity
+2. Gets latest message via `player.get_current_message(&topic)`
+3. Only decodes when timestamp changes (skip redundant frames)
+4. Register in `PanelType` enum and panel factory
+
+## When Debugging Playback Issues
+1. Check `load_generation` - are stale loads being discarded?
+2. Check `latest_messages` update logic - correct time window?
+3. Check chunk_cache scan - are irrelevant chunks being skipped?
+4. Check image panel - is it blocking on decode? (should use Blob URLs)
+5. Use browser DevTools Performance tab to find frame drops

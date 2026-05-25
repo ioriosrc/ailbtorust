@@ -132,24 +132,84 @@ html, body {
     color: var(--text-primary);
 }
 
+.app-bar-sidebar-toggle {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    padding: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    -webkit-app-region: no-drag;
+}
+
+.app-bar-sidebar-toggle:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
 /* ============ Sidebar ============ */
 .sidebar {
-    width: var(--sidebar-width);
+    width: 0;
     background: var(--bg-secondary);
-    border-right: 1px solid var(--border-color);
+    border-right: none;
     display: flex;
     flex-direction: column;
     transition: width 0.2s ease;
     overflow: hidden;
+    position: relative;
 }
 
 .sidebar.sidebar-right {
     border-right: none;
-    border-left: 1px solid var(--border-color);
+    border-left: none;
 }
 
 .sidebar.open {
     width: var(--sidebar-expanded-width);
+    border-right: 1px solid var(--border-color);
+}
+
+.sidebar.open.sidebar-right {
+    border-right: none;
+    border-left: 1px solid var(--border-color);
+}
+
+/* Sidebar resize handle */
+.sidebar-resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 4px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 10;
+    transition: background 0.15s;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resizing .sidebar-resize-handle {
+    background: var(--accent-color, #4c9eff);
+}
+
+.sidebar-resize-handle.sidebar-resize-left {
+    right: auto;
+    left: 0;
+}
+
+body.sidebar-resizing .sidebar {
+    transition: none;
+}
+
+body.sidebar-resizing {
+    cursor: col-resize !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
 }
 
 .sidebar-nav {

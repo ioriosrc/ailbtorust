@@ -11,29 +11,35 @@ pub fn AppBar() -> impl IntoView {
 
     let toggle_left_sidebar = move |_| {
         state.left_sidebar_open.update(|open| *open = !*open);
-        log::info!("Left sidebar toggled: {}", state.left_sidebar_open.get_untracked());
     };
 
     let toggle_right_sidebar = move |_| {
         state.right_sidebar_open.update(|open| *open = !*open);
-        log::info!("Right sidebar toggled: {}", state.right_sidebar_open.get_untracked());
     };
 
     let open_data_source = move |_| {
         state.data_source_dialog_open.set(true);
-        log::info!("Data source dialog opened");
+    };
+
+    let left_title = move || {
+        if state.left_sidebar_open.get() {
+            "Hide left sidebar ["
+        } else {
+            "Show left sidebar ["
+        }
+    };
+
+    let right_title = move || {
+        if state.right_sidebar_open.get() {
+            "Hide right sidebar ]"
+        } else {
+            "Show right sidebar ]"
+        }
     };
 
     view! {
         <header class="app-bar">
             <div class="app-bar-left">
-                <button
-                    class="app-bar-button"
-                    on:click=toggle_left_sidebar
-                    title="Toggle left sidebar"
-                >
-                    <span class="icon">{"☰"}</span>
-                </button>
                 <div class="app-bar-logo">
                     <span class="logo-text">{"Lichtblick"}</span>
                 </div>
@@ -49,11 +55,22 @@ pub fn AppBar() -> impl IntoView {
             </div>
             <div class="app-bar-right">
                 <button
-                    class="app-bar-button"
-                    on:click=toggle_right_sidebar
-                    title="Toggle right sidebar"
+                    class="app-bar-sidebar-toggle"
+                    on:click=toggle_left_sidebar
+                    title=left_title
                 >
-                    <span class="icon">{"☰"}</span>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M2 2h3v12H2V2zm5 0h7v1H7V2zm0 11h7v1H7v-1zm0-3h7v1H7v-1zm0-3h7v1H7V7zm0-3h7v1H7V4z"/>
+                    </svg>
+                </button>
+                <button
+                    class="app-bar-sidebar-toggle"
+                    on:click=toggle_right_sidebar
+                    title=right_title
+                >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M11 2h3v12h-3V2zM2 2h7v1H2V2zm0 11h7v1H2v-1zm0-3h7v1H2v-1zm0-3h7v1H2V7zm0-3h7v1H2V4z"/>
+                    </svg>
                 </button>
             </div>
         </header>

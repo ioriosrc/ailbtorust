@@ -50,8 +50,8 @@ struct CachedChunk {
     mem_bytes: usize,
 }
 
-/// Maximum total cached chunk data (~200MB).
-const MAX_CACHE_BYTES: usize = 200 * 1024 * 1024;
+/// Maximum total cached chunk data (~100MB - keeps tick scanning fast).
+const MAX_CACHE_BYTES: usize = 100 * 1024 * 1024;
 
 /// Player internal state for lazy-loading architecture.
 struct PlaybackState {
@@ -112,11 +112,15 @@ impl McapPlayer {
                     .get(&ch.schema_id)
                     .map(|s| s.name.clone())
                     .unwrap_or_default();
+                let message_count = summary.statistics.channel_message_counts
+                    .get(&ch.id)
+                    .copied()
+                    .unwrap_or(0) as usize;
                 TopicInfo {
                     name: ch.topic.clone(),
                     schema_name,
                     encoding: ch.message_encoding.clone(),
-                    message_count: 0, // We don't know per-topic counts from summary alone
+                    message_count,
                 }
             })
             .collect();
@@ -220,19 +224,34 @@ impl McapPlayer {
         let duration_ns = state.end_time_ns.saturating_sub(state.start_time_ns);
         let duration_secs = duration_ns as f64 / 1_000_000_000.0;
 
-        // Use summary channel_message_counts for stable values (doesn't change during playback)
         let mut result = HashMap::new();
-        for (&channel_id, &count) in &state.summary.statistics.channel_message_counts {
-            if let Some((topic, _, _)) = state.channel_lookup.get(&channel_id) {
+
+        if !state.summary.statistics.channel_message_counts.is_empty() {
+            // Use summary channel_message_counts for stable values (doesn't change during playback)
+            for (&channel_id, &count) in &state.summary.statistics.channel_message_counts {
+                if let Some((topic, _, _)) = state.channel_lookup.get(&channel_id) {
+                    let hz = if duration_secs > 0.0 && count > 1 {
+                        (count as f64 - 1.0) / duration_secs
+                    } else {
+                        0.0
+                    };
+                    // Accumulate if multiple channels map to same topic
+                    let entry = result.entry(topic.clone()).or_insert((0u64, 0.0f64));
+                    entry.0 += count;
+                    entry.1 += hz;
+                }
+            }
+        } else {
+            // Fallback: compute from total messages per topic in chunk index.
+            // Use TopicInfo.message_count if available.
+            for topic_info in &state.topics {
+                let count = topic_info.message_count as u64;
                 let hz = if duration_secs > 0.0 && count > 1 {
                     (count as f64 - 1.0) / duration_secs
                 } else {
                     0.0
                 };
-                // Accumulate if multiple channels map to same topic
-                let entry = result.entry(topic.clone()).or_insert((0u64, 0.0f64));
-                entry.0 += count;
-                entry.1 += hz;
+                result.insert(topic_info.name.clone(), (count, hz));
             }
         }
         result
@@ -312,20 +331,29 @@ impl McapPlayer {
             state.load_generation += 1;
             state.loading_in_progress = false;
 
-            // Rebuild latest_messages for the new time position
+            // Rebuild latest_messages for the new time position.
+            // For each topic, find the latest message <= current_time across all cached chunks.
             let current_ns = state.current_time_ns;
             state.latest_messages.clear();
+            // Collect one best message per topic per chunk, then merge
             let mut updates: Vec<(String, StoredMessage)> = Vec::new();
             for chunk in &state.chunk_cache {
                 let msgs = &chunk.messages;
+                if msgs.is_empty() {
+                    continue;
+                }
+                if msgs.first().unwrap().log_time_ns > current_ns {
+                    continue;
+                }
                 let pos = msgs.partition_point(|m| m.log_time_ns <= current_ns);
-                let mut seen = std::collections::HashSet::new();
+                let mut seen_in_chunk = std::collections::HashSet::new();
                 for i in (0..pos).rev() {
                     let msg = &msgs[i];
-                    if !seen.contains(&msg.topic) {
-                        seen.insert(msg.topic.clone());
-                        updates.push((msg.topic.clone(), msg.clone()));
+                    if seen_in_chunk.contains(&msg.topic) {
+                        continue;
                     }
+                    seen_in_chunk.insert(msg.topic.clone());
+                    updates.push((msg.topic.clone(), msg.clone()));
                 }
             }
             for (topic, msg) in updates {
@@ -367,14 +395,21 @@ impl McapPlayer {
             let mut updates: Vec<(String, StoredMessage)> = Vec::new();
             for chunk in &state.chunk_cache {
                 let msgs = &chunk.messages;
+                if msgs.is_empty() {
+                    continue;
+                }
+                if msgs.first().unwrap().log_time_ns > current_ns {
+                    continue;
+                }
                 let pos = msgs.partition_point(|m| m.log_time_ns <= current_ns);
-                let mut seen = std::collections::HashSet::new();
+                let mut seen_in_chunk = std::collections::HashSet::new();
                 for i in (0..pos).rev() {
                     let msg = &msgs[i];
-                    if !seen.contains(&msg.topic) {
-                        seen.insert(msg.topic.clone());
-                        updates.push((msg.topic.clone(), msg.clone()));
+                    if seen_in_chunk.contains(&msg.topic) {
+                        continue;
                     }
+                    seen_in_chunk.insert(msg.topic.clone());
+                    updates.push((msg.topic.clone(), msg.clone()));
                 }
             }
             for (topic, msg) in updates {
@@ -985,17 +1020,26 @@ fn tick_and_reschedule(
         }
     };
 
-    // Update latest_messages incrementally: only scan messages in the narrow
-    // time window (prev_time..current_time]. Typically just 16ms of messages.
-    // This is O(new_messages) instead of O(all_chunks × binary_search).
+    // Update latest_messages incrementally: only scan chunks whose time range
+    // overlaps the narrow window (prev_time..current_time].
+    // Skip chunks entirely outside this window for O(relevant_chunks) instead of O(all_chunks).
     {
         let mut state = inner.borrow_mut();
         let current_ns = current_time;
         let prev_ns = prev_time;
-        // Collect updates first to avoid borrowing conflict
+        // Collect updates from chunks that overlap (prev_ns, current_ns]
         let mut updates: Vec<(String, StoredMessage)> = Vec::new();
         for chunk in &state.chunk_cache {
             let msgs = &chunk.messages;
+            if msgs.is_empty() {
+                continue;
+            }
+            // Skip chunk entirely if its time range doesn't overlap (prev_ns, current_ns]
+            let chunk_start = msgs.first().unwrap().log_time_ns;
+            let chunk_end = msgs.last().unwrap().log_time_ns;
+            if chunk_end <= prev_ns || chunk_start > current_ns {
+                continue;
+            }
             // Find messages in range (prev_ns, current_ns]
             let start_pos = msgs.partition_point(|m| m.log_time_ns <= prev_ns);
             let end_pos = msgs.partition_point(|m| m.log_time_ns <= current_ns);
@@ -1034,7 +1078,11 @@ fn tick_and_reschedule(
         app_state
             .current_time_display
             .set(format!("{}:{:05.3}", mins, secs));
-        app_state.frame_tick.set(frame);
+        // Throttle frame_tick to every other frame (~30fps panel updates)
+        // This halves the reactive work while keeping time/progress smooth at 60fps
+        if frame % 2 == 0 {
+            app_state.frame_tick.set(frame);
+        }
     }
 
     // Update URL time parameter outside the render-critical path.
@@ -1059,8 +1107,9 @@ fn tick_and_reschedule(
             let any = !needed.is_empty();
             (needed, any)
         } else {
-            let behind_ns = 1_000_000_000u64;
-            let ahead_ns = 10_000_000_000u64;
+            // Large file: prefetch 3s ahead to avoid blocking too much main thread
+            let behind_ns = 500_000_000u64; // 0.5s behind
+            let ahead_ns = 3_000_000_000u64; // 3s ahead
             let start = current_time.saturating_sub(behind_ns);
             let end = current_time.saturating_add(ahead_ns).min(state.end_time_ns);
             let needed = mcap_reader::find_chunks_for_time(&state.chunk_indices, start, end);
@@ -1073,7 +1122,8 @@ fn tick_and_reschedule(
         };
 
         if any_missing && !state.loading_in_progress {
-            let missing: Vec<usize> = needed.into_iter().take(5).collect();
+            // Load only 2 chunks at a time to keep main thread responsive
+            let missing: Vec<usize> = needed.into_iter().take(2).collect();
             let gen = state.load_generation;
             drop(state);
 

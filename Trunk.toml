@@ -3,6 +3,8 @@
 dist = "dist"
 # The index HTML file
 target = "web/index.html"
+# Disable file hashing to prevent wasm-bindgen stage dir race condition
+filehash = false
 
 [watch]
 watch = ["crates", "web"]
