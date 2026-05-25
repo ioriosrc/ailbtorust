@@ -294,8 +294,13 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
         submenu_open.set(true);
     };
 
+    let on_panel_click = move |_: leptos::ev::MouseEvent| {
+        // Select this panel for settings sidebar when clicked
+        layout.active_settings_panel.set(Some(node_id));
+    };
+
     view! {
-        <div class="panel-container">
+        <div class="panel-container" on:click=on_panel_click>
             <div class="panel-toolbar">
                 <span class="panel-title">{title}</span>
                 {topic.clone().map(|t| view! {
