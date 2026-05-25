@@ -48,9 +48,23 @@ pub fn AppBar() -> impl IntoView {
                 <button
                     class="app-bar-button data-source-button"
                     on:click=open_data_source
+                    title=move || {
+                        state.current_file_name.get().unwrap_or_else(|| "Open data source".to_string())
+                    }
                 >
-                    <span class="icon">{"📂"}</span>
-                    <span>{"Open data source"}</span>
+                    {move || {
+                        if let Some(name) = state.current_file_name.get() {
+                            view! {
+                                <span class="icon">{"📄"}</span>
+                                <span class="file-name-text">{name}</span>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <span class="icon">{"📂"}</span>
+                                <span>{"Open data source"}</span>
+                            }.into_any()
+                        }
+                    }}
                 </button>
             </div>
             <div class="app-bar-right">

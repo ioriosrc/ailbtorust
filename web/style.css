@@ -126,6 +126,15 @@ html, body {
     border: 1px solid var(--border-color);
 }
 
+.file-name-text {
+    font-family: monospace;
+    font-size: 12px;
+    max-width: 500px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .logo-text {
     font-weight: 600;
     font-size: 14px;
@@ -1295,6 +1304,145 @@ body.splitter-dragging-v {
     font-family: monospace;
 }
 
+/* Info row clickable (collapse toggle) */
+.info-row-clickable {
+    cursor: pointer;
+    user-select: none;
+}
+.info-row-clickable:hover {
+    background: var(--bg-hover);
+    border-radius: 4px;
+    margin: -4px -8px;
+    padding: 4px 8px;
+}
+
+/* Collapse arrow */
+.info-collapse-arrow {
+    display: inline-block;
+    font-size: 9px;
+    margin-right: 6px;
+    transition: transform 0.15s ease;
+}
+.info-collapse-arrow-open {
+    transform: rotate(90deg);
+}
+
+/* Topics collapse section */
+.topics-collapse-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: -4px;
+    margin-bottom: 4px;
+}
+
+.topics-search-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.topics-search-input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 11px;
+    outline: none;
+}
+.topics-search-input:focus {
+    border-color: var(--accent-color);
+}
+.topics-search-input::placeholder {
+    color: var(--text-muted);
+}
+
+.topics-search-count {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.topics-collapse-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+}
+
+.topic-collapse-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+.topic-collapse-item:last-child {
+    border-bottom: none;
+}
+.topic-collapse-item:hover {
+    background: var(--bg-hover);
+}
+
+.topic-collapse-name {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    overflow: hidden;
+}
+
+.topic-collapse-topic {
+    font-size: 11px;
+    color: var(--text-primary);
+    font-family: monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.topic-collapse-schema {
+    font-size: 9px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.topic-copy-btn {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    padding: 0;
+    opacity: 0;
+    transition: opacity 0.1s;
+}
+.topic-collapse-item:hover .topic-copy-btn {
+    opacity: 1;
+}
+.topic-copy-btn:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--border-color);
+    color: var(--text-primary);
+}
+
 /* ============ Topic List ============ */
 .topic-list {
     display: flex;
@@ -1769,6 +1917,27 @@ body.splitter-dragging-v {
 .sidebar-tab-btn.active {
     color: var(--accent-color, #6c9eff);
     border-bottom-color: var(--accent-color, #6c9eff);
+}
+
+.sidebar-tab-alerts {
+    position: relative;
+}
+
+.alert-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    margin-left: 4px;
+    border-radius: 8px;
+    background: #e53935;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1;
+    vertical-align: middle;
 }
 
 .sidebar-tab-content {

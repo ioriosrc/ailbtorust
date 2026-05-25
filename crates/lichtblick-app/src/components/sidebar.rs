@@ -136,9 +136,7 @@ pub fn Sidebar(
 fn LeftSidebarContent() -> impl IntoView {
     let state = use_app_state();
     let layout = use_layout_state();
-    // 0=Panel, 1=Topics, 2=Alerts, 3=Layouts
-    // Default to Topics (1) when a data source is active
-    let active_tab = RwSignal::new(1u8);
+    let active_tab = state.left_sidebar_tab;
 
     // When a panel's settings gear is clicked, switch to Panel tab
     Effect::new(move |_| {
@@ -146,6 +144,38 @@ fn LeftSidebarContent() -> impl IntoView {
             active_tab.set(0);
         }
     });
+
+    // Compute alert count reactively
+    let alert_count = move || {
+        let _tick = state.frame_tick.get();
+        let player = match get_player() {
+            Some(p) => p,
+            None => return 0usize,
+        };
+        let topics = player.topics();
+        let stats = player.topic_stats();
+        let (start_ns, end_ns) = player.time_range();
+        let duration_secs = (end_ns.saturating_sub(start_ns)) as f64 / 1_000_000_000.0;
+        let mut count = 0usize;
+        if duration_secs > 0.0 {
+            let has_high_freq = topics.iter().any(|t| {
+                if t.schema_name.is_empty() || matches!(t.schema_name.as_str(),
+                    "rosgraph_msgs/Log" | "rosgraph_msgs/msg/Log" |
+                    "rcl_interfaces/msg/Log" | "foxglove.Log"
+                ) {
+                    return false;
+                }
+                if let Some(&(_count, hz)) = stats.get(&t.name) {
+                    return hz > 60.0;
+                }
+                false
+            });
+            if has_high_freq {
+                count += 1;
+            }
+        }
+        count
+    };
 
     view! {
         <div class="sidebar-tabs">
@@ -161,10 +191,22 @@ fn LeftSidebarContent() -> impl IntoView {
                     on:click=move |_| active_tab.set(1)
                 >{"Topics"}</button>
                 <button
-                    class="sidebar-tab-btn"
+                    class="sidebar-tab-btn sidebar-tab-alerts"
                     class:active=move || active_tab.get() == 2
                     on:click=move |_| active_tab.set(2)
-                >{"Alerts"}</button>
+                >
+                    {"Alerts"}
+                    {move || {
+                        let count = alert_count();
+                        if count > 0 {
+                            Some(view! {
+                                <span class="alert-badge">{count.to_string()}</span>
+                            })
+                        } else {
+                            None
+                        }
+                    }}
+                </button>
                 <button
                     class="sidebar-tab-btn"
                     class:active=move || active_tab.get() == 3

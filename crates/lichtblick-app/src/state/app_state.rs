@@ -936,6 +936,12 @@ pub struct AppState {
 
     // Settings
     pub color_scheme: RwSignal<ColorScheme>,
+
+    /// Left sidebar active tab: 0=Panel, 1=Topics, 2=Alerts, 3=Layouts
+    pub left_sidebar_tab: RwSignal<u8>,
+
+    /// Currently loaded file name (shown in app bar)
+    pub current_file_name: RwSignal<Option<String>>,
 }
 
 /// Provide the global app state to the component tree.
@@ -954,6 +960,8 @@ pub fn provide_app_state() {
         message_count: RwSignal::new(0),
         frame_tick: RwSignal::new(0),
         color_scheme: RwSignal::new(ColorScheme::Dark),
+        left_sidebar_tab: RwSignal::new(1),
+        current_file_name: RwSignal::new(None),
     };
 
     provide_context(state);

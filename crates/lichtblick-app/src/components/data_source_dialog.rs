@@ -196,6 +196,9 @@ pub fn create_player_from_summary(
     state.playback_progress.set(0.0);
     state.current_time_display.set("0:00.000".to_string());
 
+    // Store file name for the app bar
+    state.current_file_name.set(Some(file.name()));
+
     // Create lazy player - INSTANT, no message data loaded yet
     let player = McapPlayer::new_lazy(file, summary, state);
     set_player(player);

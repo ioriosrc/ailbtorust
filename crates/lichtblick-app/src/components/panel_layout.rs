@@ -308,8 +308,10 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
     };
 
     let on_panel_click = move |_: leptos::ev::MouseEvent| {
-        // Select this panel for settings sidebar when clicked
-        layout.active_settings_panel.set(Some(node_id));
+        // Only select panel for settings when the Panel tab (0) is active in the left sidebar
+        if app_state.left_sidebar_tab.get_untracked() == 0 {
+            layout.active_settings_panel.set(Some(node_id));
+        }
     };
 
     view! {
