@@ -10,6 +10,7 @@ use crate::components::topic_list::TopicList;
 use crate::state::app_state::{
     get_player, use_app_state, use_layout_state,
     AppState, LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
+    parse_layout_node_internal,
 };
 
 /// Sidebar component (left or right) with drag-resizable width.
@@ -321,26 +322,90 @@ fn AlertsTabContent() -> impl IntoView {
     }
 }
 
-/// Layouts tab: manage saved layouts.
+/// Layouts tab: manage saved layouts with dirty state, save/revert/rename/export/delete.
 #[component]
 fn LayoutsTabContent() -> impl IntoView {
     let layout = use_layout_state();
-    let state = use_app_state();
+    let _state = use_app_state();
+
+    let popover_open = RwSignal::new(false);
+    let rename_mode = RwSignal::new(false);
+    let rename_value = RwSignal::new(String::new());
+    let menu_open_for = RwSignal::new(Option::<String>::None);
+    let menu_rename_mode = RwSignal::new(Option::<String>::None);
+    let menu_rename_value = RwSignal::new(String::new());
+    let menu_pos_top = RwSignal::new(0i32);
+    let menu_pos_left = RwSignal::new(0i32);
+
+    let on_save = move |_: leptos::ev::MouseEvent| {
+        layout.save_current();
+        popover_open.set(false);
+    };
+
+    let on_revert = move |_: leptos::ev::MouseEvent| {
+        layout.revert();
+        popover_open.set(false);
+    };
+
+    let on_rename_start = move |_: leptos::ev::MouseEvent| {
+        rename_value.set(layout.current_layout_name.get_untracked());
+        rename_mode.set(true);
+        popover_open.set(false);
+    };
+
+    let on_rename_confirm = move |_: leptos::ev::MouseEvent| {
+        let new_name = rename_value.get_untracked();
+        if !new_name.trim().is_empty() {
+            layout.rename_current(new_name.trim().to_string());
+        }
+        rename_mode.set(false);
+    };
+
+    let on_rename_cancel = move |_: leptos::ev::MouseEvent| {
+        rename_mode.set(false);
+    };
+
+    let on_export = move |_: leptos::ev::MouseEvent| {
+        let json = layout.export_json();
+        let blob_parts = js_sys::Array::new();
+        blob_parts.push(&wasm_bindgen::JsValue::from_str(&json));
+        let opts = web_sys::BlobPropertyBag::new();
+        opts.set_type("application/json");
+        if let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&blob_parts, &opts) {
+            if let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) {
+                let window = web_sys::window().unwrap();
+                let document = window.document().unwrap();
+                let a = document.create_element("a").unwrap();
+                a.set_attribute("href", &url).ok();
+                let name = layout.current_layout_name.get_untracked();
+                a.set_attribute("download", &format!("{}.json", name)).ok();
+                let a: web_sys::HtmlElement = a.dyn_into().unwrap();
+                a.click();
+                web_sys::Url::revoke_object_url(&url).ok();
+            }
+        }
+        popover_open.set(false);
+    };
+
+    let on_delete = move |_: leptos::ev::MouseEvent| {
+        let name = layout.current_layout_name.get_untracked();
+        layout.delete_layout(&name);
+        popover_open.set(false);
+    };
 
     let on_create_new = move |_: leptos::ev::MouseEvent| {
-        // Create a default layout (current state is already the layout)
-        // In a full implementation this would prompt for a name and save to localStorage
+        // Prompt for name via window.prompt
         let window = web_sys::window().unwrap();
-        if let Ok(Some(storage)) = window.local_storage() {
-            let layout_json = export_layout_json(&layout);
-            let name = format!("Layout {}", js_sys::Date::new_0().to_locale_time_string("en-US"));
-            let key = format!("layout:{}", name);
-            storage.set_item(&key, &layout_json).ok();
+        if let Ok(Some(name)) = window.prompt_with_message("Layout name:") {
+            if !name.trim().is_empty() {
+                // Save current as the new name
+                layout.current_layout_name.set(name.trim().to_string());
+                layout.save_current();
+            }
         }
     };
 
     let on_import = move |_: leptos::ev::MouseEvent| {
-        // Trigger file input for JSON import
         let document = web_sys::window().unwrap().document().unwrap();
         let input = document.create_element("input").unwrap();
         let input: web_sys::HtmlInputElement = input.dyn_into().unwrap();
@@ -348,7 +413,6 @@ fn LayoutsTabContent() -> impl IntoView {
         input.set_attribute("accept", ".json").ok();
 
         let layout_clone = layout;
-        let state_clone = state;
         let input_clone = input.clone();
         let onchange = wasm_bindgen::closure::Closure::once(move |_: web_sys::Event| {
             let files = input_clone.files().unwrap();
@@ -356,11 +420,10 @@ fn LayoutsTabContent() -> impl IntoView {
                 let reader = web_sys::FileReader::new().unwrap();
                 let reader_clone = reader.clone();
                 let layout_for_load = layout_clone;
-                let state_for_load = state_clone;
                 let onload = wasm_bindgen::closure::Closure::once(move |_: web_sys::Event| {
                     if let Ok(result) = reader_clone.result() {
                         if let Some(text) = result.as_string() {
-                            import_layout_json(&text, &layout_for_load, state_for_load);
+                            import_layout_json(&text, &layout_for_load);
                         }
                     }
                 });
@@ -374,46 +437,47 @@ fn LayoutsTabContent() -> impl IntoView {
         input.click();
     };
 
-    let on_export = move |_: leptos::ev::MouseEvent| {
-        let json = export_layout_json(&layout);
-        // Create and download the file
-        let blob_parts = js_sys::Array::new();
-        blob_parts.push(&wasm_bindgen::JsValue::from_str(&json));
-        let opts = web_sys::BlobPropertyBag::new();
-        opts.set_type("application/json");
-        let blob = web_sys::Blob::new_with_str_sequence_and_options(&blob_parts, &opts).unwrap();
-        let url = web_sys::Url::create_object_url_with_blob(&blob).unwrap();
-        let window = web_sys::window().unwrap();
-        let document = window.document().unwrap();
-        let a = document.create_element("a").unwrap();
-        a.set_attribute("href", &url).ok();
-        a.set_attribute("download", "layout.json").ok();
-        let a: web_sys::HtmlElement = a.dyn_into().unwrap();
-        a.click();
-        web_sys::Url::revoke_object_url(&url).ok();
-    };
-
-    // Get saved layouts from localStorage
-    let saved_layouts = move || -> Vec<String> {
-        let window = web_sys::window().unwrap();
-        if let Ok(Some(storage)) = window.local_storage() {
-            let len = storage.length().unwrap_or(0);
-            let mut layouts = Vec::new();
-            for i in 0..len {
-                if let Ok(Some(key)) = storage.key(i) {
-                    if key.starts_with("layout:") {
-                        layouts.push(key[7..].to_string());
-                    }
-                }
-            }
-            layouts
-        } else {
-            Vec::new()
-        }
-    };
-
     view! {
         <div class="layouts-list">
+            // Current layout header with rename support
+            <div class="layout-current-header">
+                {move || {
+                    if rename_mode.get() {
+                        view! {
+                            <div class="layout-rename-row">
+                                <input
+                                    class="layout-rename-input"
+                                    type="text"
+                                    prop:value=move || rename_value.get()
+                                    on:input=move |ev| {
+                                        let val = event_target_value(&ev);
+                                        rename_value.set(val);
+                                    }
+                                    on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                                        if ev.key() == "Enter" {
+                                            let new_name = rename_value.get_untracked();
+                                            if !new_name.trim().is_empty() {
+                                                layout.rename_current(new_name.trim().to_string());
+                                            }
+                                            rename_mode.set(false);
+                                        } else if ev.key() == "Escape" {
+                                            rename_mode.set(false);
+                                        }
+                                    }
+                                />
+                                <button class="layout-rename-btn" on:click=on_rename_confirm>{"✓"}</button>
+                                <button class="layout-rename-btn" on:click=on_rename_cancel>{"✕"}</button>
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }
+                }}
+            </div>
+
+            <hr class="layouts-divider" />
+
+            // Actions row
             <div class="layouts-actions">
                 <button class="layout-action-btn" on:click=on_create_new>
                     <span class="layout-action-icon">{"+"}</span>
@@ -423,100 +487,298 @@ fn LayoutsTabContent() -> impl IntoView {
                     <span class="layout-action-icon">{"📁"}</span>
                     {"Import from file"}
                 </button>
-                <button class="layout-action-btn" on:click=on_export>
-                    <span class="layout-action-icon">{"💾"}</span>
-                    {"Export current layout"}
-                </button>
             </div>
+
             <hr class="layouts-divider" />
+
+            // Saved layouts list
             <div class="layouts-saved">
-                <div class="layout-item layout-item-active">
-                    <span class="layout-item-icon">{"📐"}</span>
-                    <span class="layout-item-name">{"Default"}</span>
-                </div>
-                {move || saved_layouts().into_iter().map(|name| {
-                    let layout_c = layout;
-                    let state_c = state;
-                    let name_clone = name.clone();
-                    let on_load = move |_: leptos::ev::MouseEvent| {
-                        let window = web_sys::window().unwrap();
-                        if let Ok(Some(storage)) = window.local_storage() {
-                            let key = format!("layout:{}", name_clone);
-                            if let Ok(Some(json)) = storage.get_item(&key) {
-                                import_layout_json(&json, &layout_c, state_c);
+                {move || {
+                    let names = layout.saved_layout_names.get();
+                    let current = layout.current_layout_name.get();
+                    let is_dirty = layout.is_dirty.get();
+                    let inline_rename = menu_rename_mode.get();
+                    names.into_iter().map(|name| {
+                        let is_active = name == current;
+                        let show_dirty = is_active && is_dirty;
+                        let name_for_click = name.clone();
+                        let name_for_menu = name.clone();
+                        let layout_c = layout;
+                        let on_switch = move |_: leptos::ev::MouseEvent| {
+                            if !is_active {
+                                layout_c.switch_to_layout(&name_for_click);
+                            }
+                        };
+                        let on_dots_click = move |ev: leptos::ev::MouseEvent| {
+                            ev.stop_propagation();
+                            let target = ev.current_target().unwrap();
+                            let el: web_sys::HtmlElement = target.dyn_into().unwrap();
+                            let rect = el.get_bounding_client_rect();
+                            menu_pos_top.set(rect.bottom() as i32);
+                            menu_pos_left.set((rect.right() as i32) - 160);
+                            let n = name_for_menu.clone();
+                            menu_open_for.update(|v| {
+                                if v.as_deref() == Some(&n) {
+                                    *v = None;
+                                } else {
+                                    *v = Some(n);
+                                }
+                            });
+                            popover_open.set(false);
+                        };
+                        let on_dirty_dot_click = move |ev: leptos::ev::MouseEvent| {
+                            ev.stop_propagation();
+                            let target = ev.current_target().unwrap();
+                            let el: web_sys::HtmlElement = target.dyn_into().unwrap();
+                            let rect = el.get_bounding_client_rect();
+                            menu_pos_top.set(rect.bottom() as i32);
+                            menu_pos_left.set((rect.right() as i32) - 160);
+                            popover_open.update(|v| *v = !*v);
+                            menu_open_for.set(None);
+                        };
+                        let active_class = if is_active { " layout-item-active" } else { "" };
+                        let is_renaming = inline_rename.as_deref() == Some(&name);
+                        view! {
+                            <div class="layout-item-wrapper">
+                                <div
+                                    class=format!("layout-item{}", active_class)
+                                    on:click=on_switch
+                                >
+                                    <span class="layout-item-icon">{"📐"}</span>
+                                    {if is_renaming {
+                                        let name_orig = name.clone();
+                                        let on_rename_confirm_item = move |_: leptos::ev::MouseEvent| {
+                                            let new_name = menu_rename_value.get_untracked();
+                                            if !new_name.trim().is_empty() && new_name.trim() != name_orig {
+                                                let current_name = layout.current_layout_name.get_untracked();
+                                                if current_name != name_orig {
+                                                    layout.switch_to_layout(&name_orig);
+                                                }
+                                                layout.rename_current(new_name.trim().to_string());
+                                            }
+                                            menu_rename_mode.set(None);
+                                        };
+                                        let on_rename_cancel_item = move |_: leptos::ev::MouseEvent| {
+                                            menu_rename_mode.set(None);
+                                        };
+                                        view! {
+                                            <input
+                                                class="layout-rename-input"
+                                                type="text"
+                                                prop:value=move || menu_rename_value.get()
+                                                on:input=move |ev| {
+                                                    menu_rename_value.set(event_target_value(&ev));
+                                                }
+                                                on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                                                    if ev.key() == "Enter" {
+                                                        let new_name = menu_rename_value.get_untracked();
+                                                        if !new_name.trim().is_empty() {
+                                                            let current_name = layout.current_layout_name.get_untracked();
+                                                            let orig = menu_rename_mode.get_untracked().unwrap_or_default();
+                                                            if current_name != orig {
+                                                                layout.switch_to_layout(&orig);
+                                                            }
+                                                            layout.rename_current(new_name.trim().to_string());
+                                                        }
+                                                        menu_rename_mode.set(None);
+                                                    } else if ev.key() == "Escape" {
+                                                        menu_rename_mode.set(None);
+                                                    }
+                                                }
+                                                on:click=move |ev: leptos::ev::MouseEvent| { ev.stop_propagation(); }
+                                            />
+                                            <button class="layout-rename-btn" on:click=on_rename_confirm_item>{"✓"}</button>
+                                            <button class="layout-rename-btn" on:click=on_rename_cancel_item>{"✕"}</button>
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <span class="layout-item-name">{name.clone()}</span>
+                                            {if show_dirty {
+                                                view! {
+                                                    <span
+                                                        class="layout-dirty-dot"
+                                                        title="This layout has unsaved changes"
+                                                        on:click=on_dirty_dot_click
+                                                    >{"●"}</span>
+                                                }.into_any()
+                                            } else {
+                                                view! {
+                                                    <span
+                                                        class="layout-dots-menu"
+                                                        title="Layout options"
+                                                        on:click=on_dots_click
+                                                    >{"⋮"}</span>
+                                                }.into_any()
+                                            }}
+                                        }.into_any()
+                                    }}
+                                </div>
+                            </div>
+                        }
+                    }).collect_view()
+                }}
+            </div>
+
+            // Fixed-position floating menu (rendered outside scroll container via fixed pos)
+            {move || {
+                let open_menu = menu_open_for.get();
+                let is_popover = popover_open.get();
+                let top = menu_pos_top.get();
+                let left = menu_pos_left.get();
+                let style = format!("position:fixed;top:{}px;left:{}px;z-index:10000;", top, left);
+
+                if open_menu.is_some() {
+                    let menu_name = open_menu.unwrap();
+                    let name_for_rename = menu_name.clone();
+                    let name_for_dup = menu_name.clone();
+                    let name_for_export = menu_name.clone();
+                    let name_for_del = menu_name.clone();
+
+                    let close_menu = move |_: leptos::ev::MouseEvent| {
+                        menu_open_for.set(None);
+                    };
+                    let do_rename = move |ev: leptos::ev::MouseEvent| {
+                        ev.stop_propagation();
+                        menu_rename_value.set(name_for_rename.clone());
+                        menu_rename_mode.set(Some(name_for_rename.clone()));
+                        menu_open_for.set(None);
+                    };
+                    let do_duplicate = move |ev: leptos::ev::MouseEvent| {
+                        ev.stop_propagation();
+                        layout.duplicate_layout(&name_for_dup);
+                        menu_open_for.set(None);
+                    };
+                    let do_export = move |ev: leptos::ev::MouseEvent| {
+                        ev.stop_propagation();
+                        let current_name = layout.current_layout_name.get_untracked();
+                        if current_name != name_for_export {
+                            layout.switch_to_layout(&name_for_export);
+                        }
+                        let json = layout.export_json();
+                        let blob_parts = js_sys::Array::new();
+                        blob_parts.push(&wasm_bindgen::JsValue::from_str(&json));
+                        let opts = web_sys::BlobPropertyBag::new();
+                        opts.set_type("application/json");
+                        if let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&blob_parts, &opts) {
+                            if let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) {
+                                let window = web_sys::window().unwrap();
+                                let document = window.document().unwrap();
+                                let a = document.create_element("a").unwrap();
+                                a.set_attribute("href", &url).ok();
+                                a.set_attribute("download", &format!("{}.json", name_for_export)).ok();
+                                let a: web_sys::HtmlElement = a.dyn_into().unwrap();
+                                a.click();
+                                web_sys::Url::revoke_object_url(&url).ok();
                             }
                         }
+                        menu_open_for.set(None);
+                    };
+                    let do_delete = move |ev: leptos::ev::MouseEvent| {
+                        ev.stop_propagation();
+                        layout.delete_layout(&name_for_del);
+                        menu_open_for.set(None);
+                    };
+
+                    view! {
+                        <div class="layout-menu-backdrop" on:click=close_menu>
+                            <div class="layout-item-menu" style=style on:click=move |ev: leptos::ev::MouseEvent| { ev.stop_propagation(); }>
+                                <button class="layout-menu-btn" on:click=do_rename>{"Rename"}</button>
+                                <button class="layout-menu-btn" on:click=do_duplicate>{"Duplicate"}</button>
+                                <button class="layout-menu-btn" on:click=do_export>{"Export…"}</button>
+                                <hr class="layout-menu-divider" />
+                                <button class="layout-menu-btn layout-menu-btn-danger" on:click=do_delete>{"Delete"}</button>
+                            </div>
+                        </div>
+                    }.into_any()
+                } else if is_popover {
+                    let close_popover = move |_: leptos::ev::MouseEvent| {
+                        popover_open.set(false);
                     };
                     view! {
-                        <div class="layout-item" on:click=on_load>
-                            <span class="layout-item-icon">{"📐"}</span>
-                            <span class="layout-item-name">{name}</span>
+                        <div class="layout-menu-backdrop" on:click=close_popover>
+                            <div class="layout-item-menu" style=style on:click=move |ev: leptos::ev::MouseEvent| { ev.stop_propagation(); }>
+                                <div class="layout-menu-header">{"This layout has unsaved changes"}</div>
+                                <button class="layout-menu-btn" on:click=on_save>{"Save changes"}</button>
+                                <button class="layout-menu-btn" on:click=on_revert>{"Revert"}</button>
+                                <hr class="layout-menu-divider" />
+                                <button class="layout-menu-btn" on:click=on_rename_start>{"Rename"}</button>
+                                <button class="layout-menu-btn" on:click=on_export>{"Export…"}</button>
+                                <hr class="layout-menu-divider" />
+                                <button class="layout-menu-btn layout-menu-btn-danger" on:click=on_delete>{"Delete"}</button>
+                            </div>
                         </div>
-                    }
-                }).collect_view()}
-            </div>
+                    }.into_any()
+                } else {
+                    view! { <span></span> }.into_any()
+                }
+            }}
         </div>
     }
 }
 
-/// Export current layout to JSON (matching Lichtblick format).
-fn export_layout_json(layout: &LayoutState) -> String {
-    let tree = layout.tree.get();
-    let layout_json = layout_node_to_json(&tree);
-    let configs_json = "{}"; // Simplified - could serialize panel configs
-    format!(
-        r#"{{"configById":{configs},"globalVariables":{{}},"userNodes":{{}},"playbackConfig":{{"speed":1}},"layout":{layout}}}"#,
-        configs = configs_json,
-        layout = layout_json
-    )
-}
-
-/// Convert layout tree to JSON string.
-fn layout_node_to_json(node: &LayoutNode) -> String {
-    match node {
-        LayoutNode::Panel { panel_type, .. } => {
-            let type_name = match panel_type {
-                PanelType::Image => "Image",
-                PanelType::ThreeDee => "3D",
-                PanelType::RawMessages => "RawMessages",
-                PanelType::Log => "RosOut",
-                PanelType::Plot => "Plot",
-                PanelType::DataSourceInfo => "DataSourceInfo",
-                PanelType::Diagnostics => "DiagnosticStatusPanel",
-                PanelType::StateTransitions => "StateTransitions",
-                PanelType::Teleop => "Teleop",
-                _ => "Unknown",
+/// Import a layout from JSON string (supports both internal and Lichtblick format).
+fn import_layout_json(json: &str, layout: &LayoutState) {
+    // Try internal format first (has "type":"panel" or "type":"split")
+    if json.contains(r#""type":"panel"#) || json.contains(r#""type":"split"#) {
+        // Extract the layout field if wrapped, or use directly
+        let layout_json = if let Some(inner) = extract_json_field(json, "layout") {
+            inner
+        } else {
+            json
+        };
+        if let Some(tree) = parse_layout_node_internal(layout_json, &mut 1) {
+            let next_id = count_nodes(&tree) as u32 + 1;
+            layout.tree.set(tree);
+            layout.next_id.set(next_id);
+            // Extract name if present, or generate one
+            let name = if let Some(n) = extract_string_value(json, "name") {
+                n.to_string()
+            } else {
+                generate_unique_import_name(layout)
             };
-            // Panel ID format: "Type!random"
-            format!(r#""{}!panel""#, type_name)
-        }
-        LayoutNode::Split { direction, ratio, first, second, .. } => {
-            let dir = match direction {
-                SplitDirection::Horizontal => "row",
-                SplitDirection::Vertical => "column",
-            };
-            format!(
-                r#"{{"first":{},"second":{},"direction":"{}","splitPercentage":{:.1}}}"#,
-                layout_node_to_json(first),
-                layout_node_to_json(second),
-                dir,
-                ratio
-            )
+            layout.current_layout_name.set(name);
+            layout.save_current();
+            return;
         }
     }
-}
 
-/// Import a layout from JSON string.
-fn import_layout_json(json: &str, layout: &LayoutState, _state: AppState) {
-    // Parse the JSON and build a layout tree
-    // Simplified parser - handles the Lichtblick format
+    // Fallback: Lichtblick format (has "layout": "PanelType!id" or split objects)
     if let Some(layout_value) = extract_json_field(json, "layout") {
         if let Some(tree) = parse_layout_node(layout_value, &mut 1) {
             let next_id = count_nodes(&tree) as u32 + 1;
             layout.tree.set(tree);
             layout.next_id.set(next_id);
+            // Generate a name for the imported layout
+            let name = generate_unique_import_name(layout);
+            layout.current_layout_name.set(name);
+            layout.save_current();
         }
     }
+}
+
+/// Generate a unique name for an imported layout (e.g. "Imported", "Imported 2", etc.)
+fn generate_unique_import_name(layout: &LayoutState) -> String {
+    let names = layout.saved_layout_names.get_untracked();
+    let base = "Imported";
+    if !names.contains(&base.to_string()) {
+        return base.to_string();
+    }
+    let mut i = 2;
+    loop {
+        let candidate = format!("{} {}", base, i);
+        if !names.contains(&candidate) {
+            return candidate;
+        }
+        i += 1;
+    }
+}
+
+fn extract_string_value<'a>(json: &'a str, field: &str) -> Option<&'a str> {
+    let pattern = format!(r#""{}":""#, field);
+    let start = json.find(&pattern)? + pattern.len();
+    let remaining = &json[start..];
+    let end = remaining.find('"')?;
+    Some(&remaining[..end])
 }
 
 fn count_nodes(node: &LayoutNode) -> usize {

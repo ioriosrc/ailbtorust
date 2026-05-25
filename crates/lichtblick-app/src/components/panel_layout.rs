@@ -18,7 +18,7 @@ use crate::panels::three_dee_panel::{is_point_cloud_schema, ThreeDeePanel};
 use crate::panels::topic_list::TopicList;
 use crate::state::app_state::{
     get_player, use_app_state, use_layout_state,
-    LayoutNode, NodeId, PanelType, SplitDirection,
+    LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
 };
 
 /// Panel layout manager.
@@ -29,12 +29,17 @@ pub fn PanelLayout() -> impl IntoView {
     let has_layout = move || state.has_active_layout.get();
     let layout_initialized = RwSignal::new(false);
 
-    // Set up default layout when data loads
+    // Set up default layout when data loads (only if no saved layout was restored)
     Effect::new(move |_| {
         if !state.has_active_layout.get() {
             return;
         }
         if layout_initialized.get_untracked() {
+            return;
+        }
+        // Skip if a layout was already restored from localStorage
+        if !layout.saved_tree_json.get_untracked().is_empty() {
+            layout_initialized.set(true);
             return;
         }
         if let Some(player) = get_player() {
@@ -117,9 +122,10 @@ fn LayoutNodeView(node: LayoutNode) -> impl IntoView {
         LayoutNode::Panel { .. } => {
             view! { <PanelContainer node=node /> }.into_any()
         }
-        LayoutNode::Split { id: _, direction, ratio, first, second } => {
+        LayoutNode::Split { id, direction, ratio, first, second } => {
             let ratio_signal = RwSignal::new(ratio);
             let is_horizontal = direction == SplitDirection::Horizontal;
+            let split_id = id;
 
             view! {
                 <div class="mosaic-split"
@@ -131,7 +137,7 @@ fn LayoutNodeView(node: LayoutNode) -> impl IntoView {
                     >
                         <LayoutNodeView node=*first />
                     </div>
-                    <SplitHandle is_horizontal=is_horizontal ratio=ratio_signal />
+                    <SplitHandle is_horizontal=is_horizontal ratio=ratio_signal split_id=split_id />
                     <div class="mosaic-pane mosaic-second"
                         style=move || format!("flex: 0 0 calc({}% - 2px)", 100.0 - ratio_signal.get())
                     >
@@ -145,7 +151,8 @@ fn LayoutNodeView(node: LayoutNode) -> impl IntoView {
 
 /// Draggable split handle.
 #[component]
-fn SplitHandle(is_horizontal: bool, ratio: RwSignal<f64>) -> impl IntoView {
+fn SplitHandle(is_horizontal: bool, ratio: RwSignal<f64>, split_id: NodeId) -> impl IntoView {
+    let layout = use_layout_state();
     let is_dragging = RwSignal::new(false);
 
     let on_mousedown = move |ev: leptos::ev::MouseEvent| {
@@ -196,6 +203,12 @@ fn SplitHandle(is_horizontal: bool, ratio: RwSignal<f64>) -> impl IntoView {
             if let Some(cb) = up_cb_clone.borrow().as_ref() {
                 window_clone.remove_event_listener_with_callback("mouseup", cb.as_ref().unchecked_ref()).ok();
             }
+            // Sync the ratio back to the tree and mark dirty
+            let new_ratio = ratio.get_untracked();
+            layout.tree.update(|tree| {
+                update_ratio_in_tree(tree, split_id, new_ratio);
+            });
+            layout.mark_dirty();
         });
 
         window.add_event_listener_with_callback("mousemove", mousemove.as_ref().unchecked_ref()).unwrap();
@@ -433,5 +446,20 @@ fn EmptyLayout() -> impl IntoView {
                 </div>
             </div>
         </div>
+    }
+}
+
+/// Update the ratio of a split node in the tree by its ID.
+fn update_ratio_in_tree(node: &mut LayoutNode, target_id: NodeId, new_ratio: f64) {
+    match node {
+        LayoutNode::Split { id, ratio, first, second, .. } => {
+            if *id == target_id {
+                *ratio = new_ratio;
+            } else {
+                update_ratio_in_tree(first, target_id, new_ratio);
+                update_ratio_in_tree(second, target_id, new_ratio);
+            }
+        }
+        LayoutNode::Panel { .. } => {}
     }
 }

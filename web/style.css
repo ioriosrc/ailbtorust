@@ -1996,6 +1996,8 @@ body.splitter-dragging-v {
     cursor: pointer;
     font-size: 12px;
     color: var(--text-secondary);
+    min-width: 0;
+    overflow: hidden;
 }
 
 .layout-item:hover {
@@ -2017,4 +2019,208 @@ body.splitter-dragging-v {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* Three dots menu button (visible on hover) */
+.layout-dots-menu {
+    opacity: 0;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    transition: opacity 0.15s;
+}
+
+.layout-item:hover .layout-dots-menu {
+    opacity: 1;
+}
+
+.layout-dots-menu:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+/* Layout item dropdown menu */
+.layout-item-wrapper {
+    position: relative;
+}
+
+.layout-menu-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 9999;
+}
+
+.layout-item-menu {
+    min-width: 160px;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 4px 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.layout-menu-header {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    pointer-events: none;
+}
+
+.layout-menu-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px 12px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.layout-menu-btn:hover {
+    background: var(--bg-hover);
+}
+
+.layout-menu-btn-danger {
+    color: #e05050;
+}
+
+.layout-menu-btn-danger:hover {
+    background: rgba(224, 80, 80, 0.1);
+}
+
+.layout-menu-divider {
+    border: none;
+    border-top: 1px solid var(--border-color);
+    margin: 4px 0;
+}
+
+/* Layout current header */
+.layout-current-header {
+    padding: 8px 12px;
+}
+
+.layout-current-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.layout-current-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.layout-dirty-dot {
+    color: #f0a020;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+}
+
+.layout-dirty-dot:hover {
+    background: var(--bg-hover);
+}
+
+.layout-clean-dot {
+    color: var(--text-tertiary);
+    font-size: 12px;
+    padding: 2px 4px;
+    opacity: 0.3;
+}
+
+/* Layout popover */
+.layout-popover {
+    margin: 4px 12px;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+}
+
+.layout-popover-msg {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin: 0 0 8px 0;
+}
+
+.layout-popover-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.layout-popover-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px 8px;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.layout-popover-btn:hover {
+    background: var(--bg-hover);
+}
+
+.layout-popover-btn-danger {
+    color: #e06060;
+}
+
+.layout-popover-btn-danger:hover {
+    background: rgba(224, 96, 96, 0.1);
+}
+
+/* Rename row */
+.layout-rename-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    width: 100%;
+}
+
+.layout-rename-input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 12px;
+    outline: none;
+}
+
+.layout-rename-input:focus {
+    border-color: var(--accent-color);
+}
+
+.layout-rename-btn {
+    flex-shrink: 0;
+    padding: 4px 6px;
+    background: none;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.layout-rename-btn:hover {
+    background: var(--bg-hover);
 }

@@ -5,9 +5,17 @@ dist = "dist"
 target = "web/index.html"
 # Disable file hashing to prevent wasm-bindgen stage dir race condition
 filehash = false
+# Disable minification to avoid stage dir race on hot-reload
+no_minification = true
+
+[tools]
+# Use system-installed wasm-bindgen to avoid Trunk's cache dir race condition
+wasm_bindgen = "System"
 
 [watch]
 watch = ["crates", "web"]
+# Debounce to avoid triggering multiple rapid rebuilds
+debounce = "3s"
 
 [serve]
 address = "127.0.0.1"

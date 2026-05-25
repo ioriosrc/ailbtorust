@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 use lichtblick_core::settings::ColorScheme;
 
 use crate::player::McapPlayer;
@@ -203,21 +204,323 @@ pub struct LayoutState {
     pub active_settings_panel: RwSignal<Option<NodeId>>,
     /// Per-panel image configs, keyed by NodeId.
     pub image_configs: RwSignal<HashMap<NodeId, ImagePanelConfig>>,
+    // --- Layout Manager ---
+    /// Name of the currently active layout.
+    pub current_layout_name: RwSignal<String>,
+    /// List of all saved layout names.
+    pub saved_layout_names: RwSignal<Vec<String>>,
+    /// Whether current layout has unsaved changes (dirty indicator).
+    pub is_dirty: RwSignal<bool>,
+    /// Snapshot of the tree at last save (for dirty comparison and revert).
+    pub saved_tree_json: RwSignal<String>,
 }
 
 impl LayoutState {
     pub fn new() -> Self {
+        let default_tree = LayoutNode::Panel {
+            id: 1,
+            panel_type: PanelType::ThreeDee,
+            topic: None,
+        };
+        let saved_json = layout_node_to_json_internal(&default_tree);
+
         Self {
-            tree: RwSignal::new(LayoutNode::Panel {
-                id: 1,
-                panel_type: PanelType::ThreeDee,
-                topic: None,
-            }),
+            tree: RwSignal::new(default_tree),
             next_id: RwSignal::new(2),
             fullscreen_panel: RwSignal::new(None),
             active_settings_panel: RwSignal::new(None),
             image_configs: RwSignal::new(HashMap::new()),
+            current_layout_name: RwSignal::new("Default".to_string()),
+            saved_layout_names: RwSignal::new(vec!["Default".to_string()]),
+            is_dirty: RwSignal::new(false),
+            saved_tree_json: RwSignal::new(saved_json),
         }
+    }
+
+    /// Initialize from localStorage - restore last session.
+    pub fn restore_from_storage(&self) {
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let storage = match window.local_storage() {
+            Ok(Some(s)) => s,
+            _ => return,
+        };
+
+        // Load saved layout names
+        if let Ok(Some(names_json)) = storage.get_item("lichtblick:layout_names") {
+            let names: Vec<String> = names_json
+                .split('\n')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            if !names.is_empty() {
+                self.saved_layout_names.set(names);
+            }
+        }
+
+        // Load last active layout name
+        let active_name = storage
+            .get_item("lichtblick:active_layout")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "Default".to_string());
+
+        self.current_layout_name.set(active_name.clone());
+
+        // Load the layout tree for this name
+        let key = format!("lichtblick:layout:{}", active_name);
+        if let Ok(Some(tree_json)) = storage.get_item(&key) {
+            if let Some(tree) = parse_layout_node_internal(&tree_json, &mut 1) {
+                let next_id = count_nodes_internal(&tree) as u32 + 1;
+                self.tree.set(tree);
+                self.next_id.set(next_id);
+                self.saved_tree_json.set(tree_json);
+                self.is_dirty.set(false);
+            }
+        }
+    }
+
+    /// Save current layout to localStorage.
+    pub fn save_current(&self) {
+        let name = self.current_layout_name.get_untracked();
+        let tree = self.tree.get_untracked();
+        let tree_json = layout_node_to_json_internal(&tree);
+
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let storage = match window.local_storage() {
+            Ok(Some(s)) => s,
+            _ => return,
+        };
+
+        let key = format!("lichtblick:layout:{}", name);
+        storage.set_item(&key, &tree_json).ok();
+        storage.set_item("lichtblick:active_layout", &name).ok();
+
+        // Update saved names list
+        self.saved_layout_names.update(|names| {
+            if !names.contains(&name) {
+                names.push(name.clone());
+            }
+        });
+        self.persist_layout_names();
+
+        self.saved_tree_json.set(tree_json);
+        self.is_dirty.set(false);
+    }
+
+    /// Revert to last saved state.
+    pub fn revert(&self) {
+        let saved_json = self.saved_tree_json.get_untracked();
+        if let Some(tree) = parse_layout_node_internal(&saved_json, &mut 1) {
+            let next_id = count_nodes_internal(&tree) as u32 + 1;
+            self.tree.set(tree);
+            self.next_id.set(next_id);
+            self.is_dirty.set(false);
+        }
+    }
+
+    /// Rename the current layout.
+    pub fn rename_current(&self, new_name: String) {
+        let old_name = self.current_layout_name.get_untracked();
+
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let storage = match window.local_storage() {
+            Ok(Some(s)) => s,
+            _ => return,
+        };
+
+        // Move data from old key to new key
+        let old_key = format!("lichtblick:layout:{}", old_name);
+        let new_key = format!("lichtblick:layout:{}", new_name);
+        if let Ok(Some(data)) = storage.get_item(&old_key) {
+            storage.set_item(&new_key, &data).ok();
+            storage.remove_item(&old_key).ok();
+        }
+
+        // Update names list
+        self.saved_layout_names.update(|names| {
+            if let Some(pos) = names.iter().position(|n| *n == old_name) {
+                names[pos] = new_name.clone();
+            }
+        });
+        self.persist_layout_names();
+
+        self.current_layout_name.set(new_name.clone());
+        storage.set_item("lichtblick:active_layout", &new_name).ok();
+    }
+
+    /// Delete a layout by name.
+    pub fn delete_layout(&self, name: &str) {
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let storage = match window.local_storage() {
+            Ok(Some(s)) => s,
+            _ => return,
+        };
+
+        let key = format!("lichtblick:layout:{}", name);
+        storage.remove_item(&key).ok();
+
+        self.saved_layout_names.update(|names| {
+            names.retain(|n| n != name);
+            if names.is_empty() {
+                names.push("Default".to_string());
+            }
+        });
+        self.persist_layout_names();
+
+        // If we deleted the active layout, switch to first available
+        if self.current_layout_name.get_untracked() == name {
+            let first = self.saved_layout_names.get_untracked()[0].clone();
+            self.current_layout_name.set(first.clone());
+            storage.set_item("lichtblick:active_layout", &first).ok();
+            // Load that layout (or save current tree if it doesn't exist yet, e.g. "Default" fallback)
+            let key = format!("lichtblick:layout:{}", first);
+            if let Ok(Some(json)) = storage.get_item(&key) {
+                if let Some(tree) = parse_layout_node_internal(&json, &mut 1) {
+                    let next_id = count_nodes_internal(&tree) as u32 + 1;
+                    self.tree.set(tree);
+                    self.next_id.set(next_id);
+                    self.saved_tree_json.set(json);
+                }
+            } else {
+                // No saved data for this layout (e.g. freshly created "Default"), save current tree
+                let tree = self.tree.get_untracked();
+                let tree_json = layout_node_to_json_internal(&tree);
+                storage.set_item(&key, &tree_json).ok();
+                self.saved_tree_json.set(tree_json);
+            }
+            self.is_dirty.set(false);
+        }
+    }
+
+    /// Duplicate a layout: copy its saved JSON under a new name and switch to it.
+    pub fn duplicate_layout(&self, source_name: &str) {
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let storage = match window.local_storage() {
+            Ok(Some(s)) => s,
+            _ => return,
+        };
+
+        // Read the source layout JSON
+        let source_key = format!("lichtblick:layout:{}", source_name);
+        let tree_json = match storage.get_item(&source_key) {
+            Ok(Some(json)) => json,
+            _ => {
+                // If no saved json, use current tree if it's the active layout
+                if self.current_layout_name.get_untracked() == source_name {
+                    let tree = self.tree.get_untracked();
+                    layout_node_to_json_internal(&tree)
+                } else {
+                    return;
+                }
+            }
+        };
+
+        // Generate unique name
+        let new_name = format!("{} copy", source_name);
+
+        // Save under new name
+        let new_key = format!("lichtblick:layout:{}", new_name);
+        storage.set_item(&new_key, &tree_json).ok();
+
+        // Add to names list
+        self.saved_layout_names.update(|names| {
+            if !names.contains(&new_name) {
+                names.push(new_name.clone());
+            }
+        });
+        self.persist_layout_names();
+
+        // Switch to the new layout
+        self.switch_to_layout(&new_name);
+    }
+
+    /// Switch to a different saved layout.
+    pub fn switch_to_layout(&self, name: &str) {
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let storage = match window.local_storage() {
+            Ok(Some(s)) => s,
+            _ => return,
+        };
+
+        let key = format!("lichtblick:layout:{}", name);
+        if let Ok(Some(json)) = storage.get_item(&key) {
+            if let Some(tree) = parse_layout_node_internal(&json, &mut 1) {
+                let next_id = count_nodes_internal(&tree) as u32 + 1;
+                self.tree.set(tree);
+                self.next_id.set(next_id);
+                self.saved_tree_json.set(json);
+                self.current_layout_name.set(name.to_string());
+                self.is_dirty.set(false);
+                storage.set_item("lichtblick:active_layout", name).ok();
+            }
+        } else {
+            // Layout exists in list but has no saved JSON yet - save current tree under this name
+            let tree = self.tree.get_untracked();
+            let tree_json = layout_node_to_json_internal(&tree);
+            storage.set_item(&key, &tree_json).ok();
+            self.saved_tree_json.set(tree_json);
+            self.current_layout_name.set(name.to_string());
+            self.is_dirty.set(false);
+            storage.set_item("lichtblick:active_layout", name).ok();
+        }
+    }
+
+    /// Export current layout as JSON string.
+    pub fn export_json(&self) -> String {
+        let tree = self.tree.get_untracked();
+        let tree_json = layout_node_to_json_internal(&tree);
+        let name = self.current_layout_name.get_untracked();
+        format!(
+            r#"{{"name":"{}","layout":{}}}"#,
+            name, tree_json
+        )
+    }
+
+    /// Mark layout as dirty (called after any tree mutation).
+    pub fn mark_dirty(&self) {
+        let tree = self.tree.get_untracked();
+        let current_json = layout_node_to_json_internal(&tree);
+        let saved_json = self.saved_tree_json.get_untracked();
+        self.is_dirty.set(current_json != saved_json);
+        // Auto-save working state to localStorage so refresh doesn't lose it
+        if let Some(window) = web_sys::window() {
+            if let Ok(Some(storage)) = window.local_storage() {
+                storage.set_item("lichtblick:working_tree", &current_json).ok();
+            }
+        }
+    }
+
+    /// Persist the layout names list to localStorage.
+    fn persist_layout_names(&self) {
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let storage = match window.local_storage() {
+            Ok(Some(s)) => s,
+            _ => return,
+        };
+        let names = self.saved_layout_names.get_untracked();
+        let joined = names.join("\n");
+        storage.set_item("lichtblick:layout_names", &joined).ok();
     }
 
     /// Toggle settings sidebar for a given panel.
@@ -235,6 +538,7 @@ impl LayoutState {
         self.tree.update(|tree| {
             set_topic_in_tree(tree, node_id, new_topic);
         });
+        self.mark_dirty();
     }
 
     /// Get image config for a panel (creates default if not present).
@@ -271,6 +575,7 @@ impl LayoutState {
         self.tree.update(|tree| {
             change_panel_in_tree(tree, node_id, new_type);
         });
+        self.mark_dirty();
     }
 
     /// Split a panel into two.
@@ -280,6 +585,7 @@ impl LayoutState {
         self.tree.update(|tree| {
             split_panel_in_tree(tree, node_id, direction, new_id, split_id);
         });
+        self.mark_dirty();
     }
 
     /// Remove a panel from the layout (replace parent split with sibling).
@@ -287,6 +593,7 @@ impl LayoutState {
         self.tree.update(|tree| {
             remove_panel_from_tree(tree, node_id);
         });
+        self.mark_dirty();
     }
 
     /// Create the default initial layout based on detected topics.
@@ -415,6 +722,195 @@ fn remove_panel_from_tree(node: &mut LayoutNode, target_id: NodeId) {
 }
 
 // ============================================================================
+// Layout JSON Serialization (internal)
+// ============================================================================
+
+/// Serialize a layout node to a compact JSON representation.
+pub fn layout_node_to_json_internal(node: &LayoutNode) -> String {
+    match node {
+        LayoutNode::Panel { id, panel_type, topic } => {
+            let type_str = panel_type_to_str(panel_type);
+            let topic_json = match topic {
+                Some(t) => format!(r#","topic":"{}""#, t),
+                None => String::new(),
+            };
+            format!(r#"{{"type":"panel","id":{},"panelType":"{}"{}}}"#, id, type_str, topic_json)
+        }
+        LayoutNode::Split { id, direction, ratio, first, second } => {
+            let dir_str = match direction {
+                SplitDirection::Horizontal => "row",
+                SplitDirection::Vertical => "column",
+            };
+            format!(
+                r#"{{"type":"split","id":{},"direction":"{}","ratio":{:.1},"first":{},"second":{}}}"#,
+                id,
+                dir_str,
+                ratio,
+                layout_node_to_json_internal(first),
+                layout_node_to_json_internal(second)
+            )
+        }
+    }
+}
+
+fn panel_type_to_str(pt: &PanelType) -> &'static str {
+    match pt {
+        PanelType::Image => "Image",
+        PanelType::ThreeDee => "3D",
+        PanelType::RawMessages => "RawMessages",
+        PanelType::Log => "Log",
+        PanelType::Plot => "Plot",
+        PanelType::DataSourceInfo => "DataSourceInfo",
+        PanelType::Diagnostics => "Diagnostics",
+        PanelType::StateTransitions => "StateTransitions",
+        PanelType::Teleop => "Teleop",
+        PanelType::TopicList => "TopicList",
+        PanelType::Gauge => "Gauge",
+        PanelType::Indicator => "Indicator",
+        PanelType::Map => "Map",
+        PanelType::Parameters => "Parameters",
+        PanelType::PieChart => "PieChart",
+        PanelType::Publish => "Publish",
+        PanelType::ServiceCall => "ServiceCall",
+        PanelType::Tab => "Tab",
+        PanelType::Table => "Table",
+    }
+}
+
+fn str_to_panel_type(s: &str) -> PanelType {
+    match s {
+        "Image" => PanelType::Image,
+        "3D" => PanelType::ThreeDee,
+        "RawMessages" => PanelType::RawMessages,
+        "Log" | "RosOut" => PanelType::Log,
+        "Plot" => PanelType::Plot,
+        "DataSourceInfo" => PanelType::DataSourceInfo,
+        "Diagnostics" | "DiagnosticStatusPanel" => PanelType::Diagnostics,
+        "StateTransitions" => PanelType::StateTransitions,
+        "Teleop" => PanelType::Teleop,
+        "TopicList" => PanelType::TopicList,
+        "Gauge" => PanelType::Gauge,
+        "Indicator" => PanelType::Indicator,
+        "Map" => PanelType::Map,
+        "Parameters" => PanelType::Parameters,
+        "PieChart" => PanelType::PieChart,
+        "Publish" => PanelType::Publish,
+        "ServiceCall" => PanelType::ServiceCall,
+        "Tab" => PanelType::Tab,
+        "Table" => PanelType::Table,
+        _ => PanelType::RawMessages,
+    }
+}
+
+/// Parse a layout node from our internal JSON format.
+pub fn parse_layout_node_internal(json: &str, next_id: &mut u32) -> Option<LayoutNode> {
+    let json = json.trim();
+    if !json.starts_with('{') {
+        return None;
+    }
+
+    let type_val = extract_string_field(json, "type")?;
+    match type_val {
+        "panel" => {
+            let id = extract_num_field(json, "id").unwrap_or_else(|| {
+                let id = *next_id;
+                *next_id += 1;
+                id
+            });
+            let panel_type_str = extract_string_field(json, "panelType").unwrap_or("RawMessages");
+            let panel_type = str_to_panel_type(panel_type_str);
+            let topic = extract_string_field(json, "topic").map(|s| s.to_string());
+            if id >= *next_id { *next_id = id + 1; }
+            Some(LayoutNode::Panel { id, panel_type, topic })
+        }
+        "split" => {
+            let id = extract_num_field(json, "id").unwrap_or_else(|| {
+                let id = *next_id;
+                *next_id += 1;
+                id
+            });
+            let direction = if extract_string_field(json, "direction") == Some("row") {
+                SplitDirection::Horizontal
+            } else {
+                SplitDirection::Vertical
+            };
+            let ratio = extract_float_field(json, "ratio").unwrap_or(50.0);
+            let first_json = extract_object_field(json, "first")?;
+            let second_json = extract_object_field(json, "second")?;
+            let first = parse_layout_node_internal(first_json, next_id)?;
+            let second = parse_layout_node_internal(second_json, next_id)?;
+            if id >= *next_id { *next_id = id + 1; }
+            Some(LayoutNode::Split {
+                id,
+                direction,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn count_nodes_internal(node: &LayoutNode) -> usize {
+    match node {
+        LayoutNode::Panel { .. } => 1,
+        LayoutNode::Split { first, second, .. } => 1 + count_nodes_internal(first) + count_nodes_internal(second),
+    }
+}
+
+/// Extract a string field value from JSON (simple parser, no serde dependency).
+fn extract_string_field<'a>(json: &'a str, field: &str) -> Option<&'a str> {
+    let pattern = format!(r#""{}":""#, field);
+    let start = json.find(&pattern)? + pattern.len();
+    let remaining = &json[start..];
+    let end = remaining.find('"')?;
+    Some(&remaining[..end])
+}
+
+/// Extract a numeric u32 field from JSON.
+fn extract_num_field(json: &str, field: &str) -> Option<u32> {
+    let pattern = format!(r#""{}":"#, field);
+    let start = json.find(&pattern)? + pattern.len();
+    let remaining = &json[start..];
+    let end = remaining.find(&[',', '}', ' '][..]).unwrap_or(remaining.len());
+    remaining[..end].parse::<u32>().ok()
+}
+
+/// Extract a float field from JSON.
+fn extract_float_field(json: &str, field: &str) -> Option<f64> {
+    let pattern = format!(r#""{}":"#, field);
+    let start = json.find(&pattern)? + pattern.len();
+    let remaining = &json[start..];
+    let end = remaining.find(&[',', '}', ' '][..]).unwrap_or(remaining.len());
+    remaining[..end].parse::<f64>().ok()
+}
+
+/// Extract a nested object field from JSON (balanced braces).
+fn extract_object_field<'a>(json: &'a str, field: &str) -> Option<&'a str> {
+    let pattern = format!(r#""{}":"#, field);
+    let start = json.find(&pattern)? + pattern.len();
+    let remaining = &json[start..];
+    if !remaining.starts_with('{') {
+        return None;
+    }
+    let mut depth = 0;
+    for (i, c) in remaining.chars().enumerate() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&remaining[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+// ============================================================================
 // App State
 // ============================================================================
 
@@ -461,7 +957,10 @@ pub fn provide_app_state() {
     };
 
     provide_context(state);
-    provide_context(LayoutState::new());
+
+    let layout = LayoutState::new();
+    layout.restore_from_storage();
+    provide_context(layout);
 }
 
 /// Access the global app state from any component.
