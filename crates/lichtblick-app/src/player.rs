@@ -23,7 +23,7 @@ use wasm_bindgen::JsCast;
 use crate::mcap_reader::{
     self, ChunkIndexEntry, McapSummary, DecodedMessage, ChannelInfo,
 };
-use crate::state::app_state::AppState;
+use crate::state::app_state::{AppState, TimeFormat};
 
 /// A single stored message - data is shared (Rc) to avoid cloning large buffers.
 #[derive(Clone, Debug)]
@@ -204,6 +204,28 @@ impl McapPlayer {
     /// Get current playback time in nanoseconds.
     pub fn current_time_ns(&self) -> u64 {
         self.inner.borrow().current_time_ns
+    }
+
+    pub fn start_time_ns(&self) -> u64 {
+        self.inner.borrow().start_time_ns
+    }
+
+    pub fn end_time_ns(&self) -> u64 {
+        self.inner.borrow().end_time_ns
+    }
+
+    /// Seek forward or backward by a given number of milliseconds.
+    pub fn seek_by_ms(&self, delta_ms: i64) {
+        let current = self.inner.borrow().current_time_ns;
+        let start = self.inner.borrow().start_time_ns;
+        let end = self.inner.borrow().end_time_ns;
+        let delta_ns = delta_ms * 1_000_000;
+        let target = if delta_ns >= 0 {
+            current.saturating_add(delta_ns as u64).min(end)
+        } else {
+            current.saturating_sub((-delta_ns) as u64).max(start)
+        };
+        self.seek_to_ns(target);
     }
 
     /// Get the latest message for a given topic at the current time.
@@ -640,13 +662,12 @@ impl McapPlayer {
 
     fn update_time_display(&self) {
         let state = self.inner.borrow();
-        let elapsed_ns = state.current_time_ns - state.start_time_ns;
-        let elapsed_secs = elapsed_ns as f64 / 1_000_000_000.0;
-        let mins = (elapsed_secs / 60.0).floor() as u32;
-        let secs = elapsed_secs % 60.0;
-        self.app_state
-            .current_time_display
-            .set(format!("{}:{:05.3}", mins, secs));
+        let current_ns = state.current_time_ns;
+        let formatted = match self.app_state.time_format.get_untracked() {
+            TimeFormat::TOD => format_timestamp_full(current_ns),
+            TimeFormat::SEC => format_timestamp_secs(current_ns),
+        };
+        self.app_state.current_time_display.set(formatted);
     }
 
     fn update_progress(&self) {
@@ -1010,11 +1031,19 @@ fn tick_and_reschedule(
 
         let end = state.end_time_ns;
         if state.current_time_ns >= end {
-            state.current_time_ns = end;
-            state.is_playing = false;
-            app_state.is_playing.set(false);
-            state.frame_counter += 1;
-            (false, state.current_time_ns, prev_time)
+            // Check if loop is enabled
+            if app_state.loop_playback.get_untracked() {
+                state.current_time_ns = state.start_time_ns;
+                state.latest_messages.clear();
+                state.frame_counter += 1;
+                (true, state.current_time_ns, state.start_time_ns)
+            } else {
+                state.current_time_ns = end;
+                state.is_playing = false;
+                app_state.is_playing.set(false);
+                state.frame_counter += 1;
+                (false, state.current_time_ns, prev_time)
+            }
         } else {
             state.frame_counter += 1;
             (true, state.current_time_ns, prev_time)
@@ -1070,15 +1099,14 @@ fn tick_and_reschedule(
         } else {
             0.0
         };
-        let elapsed_secs = (current - start) as f64 / 1_000_000_000.0;
         let frame = state.frame_counter;
 
         app_state.playback_progress.set(progress * 100.0);
-        let mins = (elapsed_secs / 60.0).floor() as u32;
-        let secs = elapsed_secs % 60.0;
-        app_state
-            .current_time_display
-            .set(format!("{}:{:05.3}", mins, secs));
+        let formatted = match app_state.time_format.get_untracked() {
+            TimeFormat::TOD => format_timestamp_full(current),
+            TimeFormat::SEC => format_timestamp_secs(current),
+        };
+        app_state.current_time_display.set(formatted);
         // Throttle frame_tick to every other frame (~30fps panel updates)
         // This halves the reactive work while keeping time/progress smooth at 60fps
         if frame % 2 == 0 {
@@ -1213,4 +1241,97 @@ pub fn parse_mcap_file(data: &[u8]) -> Result<(McapSummary, Vec<StoredMessage>),
 
     messages.sort_by_key(|m| m.log_time_ns);
     Ok((summary, messages))
+}
+
+// ============================================================================
+// Time Formatting Utilities
+// ============================================================================
+
+/// Format a nanosecond timestamp as date only "YYYY-MM-DD"
+pub fn format_date(ns: u64) -> String {
+    let total_secs = ns / 1_000_000_000;
+    let secs_in_day = 86400u64;
+    let days = total_secs / secs_in_day;
+    let (year, month, day) = days_to_date(days);
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+/// Format a nanosecond timestamp as time only "h:mm:ss.SSS AM/PM"
+pub fn format_time_only(ns: u64) -> String {
+    let total_secs = ns / 1_000_000_000;
+    let millis = (ns % 1_000_000_000) / 1_000_000;
+    let time_of_day = total_secs % 86400;
+
+    let hours24 = (time_of_day / 3600) as u32;
+    let minutes = ((time_of_day % 3600) / 60) as u32;
+    let seconds = (time_of_day % 60) as u32;
+
+    let (hours12, ampm) = if hours24 == 0 {
+        (12, "AM")
+    } else if hours24 < 12 {
+        (hours24, "AM")
+    } else if hours24 == 12 {
+        (12, "PM")
+    } else {
+        (hours24 - 12, "PM")
+    };
+
+    format!("{}:{:02}:{:02}.{:03} {}", hours12, minutes, seconds, millis, ampm)
+}
+
+/// Format a nanosecond timestamp as "YYYY-MM-DD h:mm:ss.SSS AM/PM"
+pub fn format_timestamp_full(ns: u64) -> String {
+    let total_secs = ns / 1_000_000_000;
+    let millis = (ns % 1_000_000_000) / 1_000_000;
+
+    // Convert to date/time components using seconds since epoch
+    let secs_in_day = 86400u64;
+    let mut days = total_secs / secs_in_day;
+    let time_of_day = total_secs % secs_in_day;
+
+    let hours24 = (time_of_day / 3600) as u32;
+    let minutes = ((time_of_day % 3600) / 60) as u32;
+    let seconds = (time_of_day % 60) as u32;
+
+    let (hours12, ampm) = if hours24 == 0 {
+        (12, "AM")
+    } else if hours24 < 12 {
+        (hours24, "AM")
+    } else if hours24 == 12 {
+        (12, "PM")
+    } else {
+        (hours24 - 12, "PM")
+    };
+
+    // Calculate year/month/day from days since epoch (1970-01-01)
+    let (year, month, day) = days_to_date(days);
+
+    format!(
+        "{:04}-{:02}-{:02} {}:{:02}:{:02}.{:03} {}",
+        year, month, day, hours12, minutes, seconds, millis, ampm
+    )
+}
+
+/// Format nanoseconds as duration string "H:MM:SS.mmm"
+pub fn format_duration_ns(ns: u64) -> String {
+    let total_secs = ns / 1_000_000_000;
+    let millis = (ns % 1_000_000_000) / 1_000_000;
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+    format!("{}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+}
+
+/// Format nanoseconds as elapsed seconds "123.456789012 sec"
+pub fn format_elapsed_secs(ns: u64) -> String {
+    let secs = ns / 1_000_000_000;
+    let frac = ns % 1_000_000_000;
+    format!("{}.{:09} sec", secs, frac)
+}
+
+/// Format nanosecond timestamp as seconds with decimal (e.g. "23652843.985514904")
+pub fn format_timestamp_secs(ns: u64) -> String {
+    let secs = ns / 1_000_000_000;
+    let frac = ns % 1_000_000_000;
+    format!("{}.{:09}", secs, frac)
 }

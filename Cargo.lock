@@ -1137,7 +1137,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "lichtblick-app"
-version = "1.24.3"
+version = "0.0.1"
 dependencies = [
  "gloo-events",
  "gloo-file",
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "lichtblick-core"
-version = "1.24.3"
+version = "0.0.1"
 dependencies = [
  "chrono",
  "indexmap",
@@ -1182,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "lichtblick-datasources"
-version = "1.24.3"
+version = "0.0.1"
 dependencies = [
  "gloo-file",
  "js-sys",
@@ -1199,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "lichtblick-mcap"
-version = "1.24.3"
+version = "0.0.1"
 dependencies = [
  "base64",
  "lichtblick-core",
@@ -1213,7 +1213,7 @@ dependencies = [
 
 [[package]]
 name = "lichtblick-messages"
-version = "1.24.3"
+version = "0.0.1"
 dependencies = [
  "lichtblick-core",
  "once_cell",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "lichtblick-panels"
-version = "1.24.3"
+version = "0.0.1"
 dependencies = [
  "lichtblick-core",
  "lichtblick-messages",
@@ -1237,7 +1237,7 @@ dependencies = [
 
 [[package]]
 name = "lichtblick-players"
-version = "1.24.3"
+version = "0.0.1"
 dependencies = [
  "async-channel",
  "futures",
@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "lichtblick-theme"
-version = "1.24.3"
+version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",

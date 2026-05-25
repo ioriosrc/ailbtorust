@@ -8,4 +8,5 @@ pub mod panel_layout;
 pub mod panel_toolbar;
 pub mod playback_controls;
 pub mod data_source_dialog;
+pub mod settings_dialog;
 pub mod topic_list;

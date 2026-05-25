@@ -11,6 +11,35 @@ use lichtblick_core::settings::ColorScheme;
 use crate::player::McapPlayer;
 
 // ============================================================================
+// Time Format Preference
+// ============================================================================
+
+/// Time display format preference (matches Lichtblick Node.js TOD/SEC modes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeFormat {
+    /// Time of Day: "YYYY-MM-DD h:mm:ss.SSS AM/PM"
+    TOD,
+    /// Seconds since epoch: "23652843.985514904"
+    SEC,
+}
+
+impl TimeFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TimeFormat::TOD => "TOD",
+            TimeFormat::SEC => "SEC",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "SEC" => TimeFormat::SEC,
+            _ => TimeFormat::TOD,
+        }
+    }
+}
+
+// ============================================================================
 // Per-Panel Configuration
 // ============================================================================
 
@@ -161,6 +190,15 @@ pub enum SplitDirection {
     Vertical,   // top | bottom
 }
 
+/// Drop position when dragging a panel onto another.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DropPosition {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
 /// A node in the layout tree.
 #[derive(Clone, Debug)]
 pub enum LayoutNode {
@@ -213,6 +251,8 @@ pub struct LayoutState {
     pub is_dirty: RwSignal<bool>,
     /// Snapshot of the tree at last save (for dirty comparison and revert).
     pub saved_tree_json: RwSignal<String>,
+    /// Panel currently being dragged (for DnD between panels).
+    pub dragging_panel_id: RwSignal<Option<NodeId>>,
 }
 
 impl LayoutState {
@@ -234,6 +274,7 @@ impl LayoutState {
             saved_layout_names: RwSignal::new(vec!["Default".to_string()]),
             is_dirty: RwSignal::new(false),
             saved_tree_json: RwSignal::new(saved_json),
+            dragging_panel_id: RwSignal::new(None),
         }
     }
 
@@ -596,6 +637,23 @@ impl LayoutState {
         self.mark_dirty();
     }
 
+    /// Move a panel next to another panel (drag-and-drop).
+    /// Removes source from its current position and splits the target panel.
+    pub fn move_panel(&self, source_id: NodeId, target_id: NodeId, position: DropPosition) {
+        if source_id == target_id {
+            return;
+        }
+        let split_id = self.gen_id();
+        self.tree.update(|tree| {
+            // First extract the source node
+            if let Some(source_node) = extract_panel_from_tree(tree, source_id) {
+                // Then insert it at the target position
+                insert_panel_at(tree, target_id, source_node, position, split_id);
+            }
+        });
+        self.mark_dirty();
+    }
+
     /// Create the default initial layout based on detected topics.
     pub fn set_default_layout(&self, image_topic: Option<String>, has_point_cloud: bool, first_other_topic: Option<String>) {
         let mut next_id = 1u32;
@@ -719,6 +777,56 @@ fn remove_panel_from_tree(node: &mut LayoutNode, target_id: NodeId) {
         remove_panel_from_tree(first, target_id);
         remove_panel_from_tree(second, target_id);
     }
+}
+
+/// Extract a panel from the tree, removing it and collapsing its parent split.
+/// Returns the extracted node if found.
+fn extract_panel_from_tree(tree: &mut LayoutNode, target_id: NodeId) -> Option<LayoutNode> {
+    // If the root itself is the target, we can't extract it
+    if tree.id() == target_id {
+        return None;
+    }
+    let extracted = find_panel_node(tree, target_id)?;
+    remove_panel_from_tree(tree, target_id);
+    Some(extracted)
+}
+
+fn find_panel_node(tree: &LayoutNode, target_id: NodeId) -> Option<LayoutNode> {
+    match tree {
+        LayoutNode::Panel { id, .. } => {
+            if *id == target_id { Some(tree.clone()) } else { None }
+        }
+        LayoutNode::Split { first, second, .. } => {
+            find_panel_node(first, target_id).or_else(|| find_panel_node(second, target_id))
+        }
+    }
+}
+
+/// Insert a panel next to a target node by splitting the target.
+fn insert_panel_at(tree: &mut LayoutNode, target_id: NodeId, new_node: LayoutNode, position: DropPosition, split_id: NodeId) -> bool {
+    if tree.id() == target_id {
+        let (direction, first, second) = match position {
+            DropPosition::Left => (SplitDirection::Horizontal, new_node, tree.clone()),
+            DropPosition::Right => (SplitDirection::Horizontal, tree.clone(), new_node),
+            DropPosition::Top => (SplitDirection::Vertical, new_node, tree.clone()),
+            DropPosition::Bottom => (SplitDirection::Vertical, tree.clone(), new_node),
+        };
+        *tree = LayoutNode::Split {
+            id: split_id,
+            direction,
+            ratio: 50.0,
+            first: Box::new(first),
+            second: Box::new(second),
+        };
+        return true;
+    }
+    if let LayoutNode::Split { first, second, .. } = tree {
+        if insert_panel_at(first, target_id, new_node.clone(), position, split_id) {
+            return true;
+        }
+        return insert_panel_at(second, target_id, new_node, position, split_id);
+    }
+    false
 }
 
 // ============================================================================
@@ -945,10 +1053,85 @@ pub struct AppState {
 
     /// Global variables: list of (name, json_value_string) pairs
     pub global_variables: RwSignal<Vec<(String, String)>>,
+
+    /// Whether playback should loop when reaching the end.
+    pub loop_playback: RwSignal<bool>,
+
+    /// Time format preference (TOD or SEC).
+    pub time_format: RwSignal<TimeFormat>,
+
+    /// Display timezone (e.g. "Detect from system", "UTC", "Europe/Lisbon").
+    pub timezone: RwSignal<String>,
+
+    /// Message rate in Hz.
+    pub message_rate: RwSignal<u32>,
+
+    /// Step size in milliseconds for seek operations.
+    pub step_size_ms: RwSignal<u32>,
+
+    /// Enable panels and features for debugging Lichtblick.
+    pub debug_panels_enabled: RwSignal<bool>,
+
+    /// Show memory use indicator in sidebar (experimental).
+    pub memory_indicator_enabled: RwSignal<bool>,
+
+    /// Whether the settings dialog is open.
+    pub settings_dialog_open: RwSignal<bool>,
+
+    /// Which settings tab is active: "general", "extensions", "experimental", "about"
+    pub settings_tab: RwSignal<String>,
 }
 
 /// Provide the global app state to the component tree.
 pub fn provide_app_state() {
+    let storage = web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten());
+
+    // Load time format preference from localStorage
+    let saved_time_format = storage.as_ref()
+        .and_then(|s| s.get_item("lichtblick:time_format").ok().flatten())
+        .map(|s| TimeFormat::from_str(&s))
+        .unwrap_or(TimeFormat::TOD);
+
+    // Load color scheme
+    let saved_color_scheme = storage.as_ref()
+        .and_then(|s| s.get_item("lichtblick:color_scheme").ok().flatten())
+        .map(|s| match s.as_str() {
+            "light" => ColorScheme::Light,
+            "system" => ColorScheme::System,
+            _ => ColorScheme::Dark,
+        })
+        .unwrap_or(ColorScheme::Dark);
+
+    // Load timezone
+    let saved_timezone = storage.as_ref()
+        .and_then(|s| s.get_item("lichtblick:timezone").ok().flatten())
+        .unwrap_or_else(|| "Detect from system".to_string());
+
+    // Load message rate
+    let saved_message_rate = storage.as_ref()
+        .and_then(|s| s.get_item("lichtblick:message_rate").ok().flatten())
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(60);
+
+    // Load step size
+    let saved_step_size = storage.as_ref()
+        .and_then(|s| s.get_item("lichtblick:step_size_ms").ok().flatten())
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(100);
+
+    // Load debug panels
+    let saved_debug_panels = storage.as_ref()
+        .and_then(|s| s.get_item("lichtblick:debug_panels").ok().flatten())
+        .map(|s| s == "true")
+        .unwrap_or(false);
+
+    // Load memory indicator
+    let saved_memory_indicator = storage.as_ref()
+        .and_then(|s| s.get_item("lichtblick:memory_indicator").ok().flatten())
+        .map(|s| s == "true")
+        .unwrap_or(false);
+
     let state = AppState {
         left_sidebar_open: RwSignal::new(true),
         right_sidebar_open: RwSignal::new(true),
@@ -962,10 +1145,19 @@ pub fn provide_app_state() {
         topic_count: RwSignal::new(0),
         message_count: RwSignal::new(0),
         frame_tick: RwSignal::new(0),
-        color_scheme: RwSignal::new(ColorScheme::Dark),
+        color_scheme: RwSignal::new(saved_color_scheme),
         left_sidebar_tab: RwSignal::new(1),
         current_file_name: RwSignal::new(None),
         global_variables: RwSignal::new(Vec::new()),
+        loop_playback: RwSignal::new(false),
+        time_format: RwSignal::new(saved_time_format),
+        timezone: RwSignal::new(saved_timezone),
+        message_rate: RwSignal::new(saved_message_rate),
+        step_size_ms: RwSignal::new(saved_step_size),
+        debug_panels_enabled: RwSignal::new(saved_debug_panels),
+        memory_indicator_enabled: RwSignal::new(saved_memory_indicator),
+        settings_dialog_open: RwSignal::new(false),
+        settings_tab: RwSignal::new("general".to_string()),
     };
 
     provide_context(state);

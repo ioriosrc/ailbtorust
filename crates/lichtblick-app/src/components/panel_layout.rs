@@ -18,7 +18,7 @@ use crate::panels::three_dee_panel::{is_point_cloud_schema, ThreeDeePanel};
 use crate::panels::topic_list::TopicList;
 use crate::state::app_state::{
     get_player, use_app_state, use_layout_state,
-    LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
+    DropPosition, LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
 };
 
 /// Panel layout manager.
@@ -242,6 +242,7 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
 
     let menu_open = RwSignal::new(false);
     let submenu_open = RwSignal::new(false);
+    let drop_zone = RwSignal::new(Option::<DropPosition>::None);
 
     let title = panel_type.display_name().to_string();
 
@@ -314,14 +315,94 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
         }
     };
 
+    // --- Drag and Drop ---
+    let on_dragstart = move |ev: web_sys::DragEvent| {
+        // Don't allow dragging if this is the only panel (root is a Panel node)
+        let tree = layout.tree.get_untracked();
+        if matches!(tree, LayoutNode::Panel { .. }) {
+            ev.prevent_default();
+            return;
+        }
+        if let Some(dt) = ev.data_transfer() {
+            dt.set_data("text/plain", &node_id.to_string()).ok();
+            dt.set_effect_allowed("move");
+        }
+        layout.dragging_panel_id.set(Some(node_id));
+    };
+
+    let on_dragend = move |_: web_sys::DragEvent| {
+        layout.dragging_panel_id.set(None);
+    };
+
+    let on_dragover = move |ev: web_sys::DragEvent| {
+        let dragging = layout.dragging_panel_id.get_untracked();
+        if dragging.is_none() || dragging == Some(node_id) {
+            return;
+        }
+        ev.prevent_default();
+        if let Some(dt) = ev.data_transfer() {
+            dt.set_drop_effect("move");
+        }
+        // Determine drop zone based on mouse position within panel
+        if let Some(target) = ev.current_target() {
+            let el: web_sys::Element = target.unchecked_into();
+            let rect = el.get_bounding_client_rect();
+            let x = ev.client_x() as f64 - rect.left();
+            let y = ev.client_y() as f64 - rect.top();
+            let w = rect.width();
+            let h = rect.height();
+
+            // Calculate which edge is closest
+            let rel_x = x / w;
+            let rel_y = y / h;
+
+            let position = if rel_x < 0.25 {
+                DropPosition::Left
+            } else if rel_x > 0.75 {
+                DropPosition::Right
+            } else if rel_y < 0.5 {
+                DropPosition::Top
+            } else {
+                DropPosition::Bottom
+            };
+            drop_zone.set(Some(position));
+        }
+    };
+
+    let on_dragleave = move |_: web_sys::DragEvent| {
+        drop_zone.set(None);
+    };
+
+    let on_drop = move |ev: web_sys::DragEvent| {
+        ev.prevent_default();
+        let zone = drop_zone.get_untracked();
+        drop_zone.set(None);
+
+        if let Some(source_id) = layout.dragging_panel_id.get_untracked() {
+            if source_id != node_id {
+                if let Some(position) = zone {
+                    layout.move_panel(source_id, node_id, position);
+                }
+            }
+        }
+        layout.dragging_panel_id.set(None);
+    };
+
     view! {
         <div
             class="panel-container"
             class:panel-selected=move || layout.active_settings_panel.get() == Some(node_id)
+            class:panel-drag-over=move || drop_zone.get().is_some()
             on:click=on_panel_click
+            on:dragover=on_dragover
+            on:dragleave=on_dragleave
+            on:drop=on_drop
         >
-            <div class="panel-toolbar">
-                <span class="panel-title">{title}</span>
+            <div class="panel-toolbar" draggable="true"
+                on:dragstart=on_dragstart
+                on:dragend=on_dragend
+            >
+                <span class="panel-title panel-drag-handle">{title}</span>
                 {topic.clone().map(|t| view! {
                     <span class="panel-topic">{t}</span>
                 })}
@@ -334,6 +415,24 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
                     >{"⋮"}</button>
                 </div>
             </div>
+            // Drop zone indicator overlay
+            {move || {
+                let zone = drop_zone.get();
+                let dragging = layout.dragging_panel_id.get();
+                if dragging.is_some() && dragging != Some(node_id) && zone.is_some() {
+                    let zone_class = match zone.unwrap() {
+                        DropPosition::Left => "drop-indicator-left",
+                        DropPosition::Right => "drop-indicator-right",
+                        DropPosition::Top => "drop-indicator-top",
+                        DropPosition::Bottom => "drop-indicator-bottom",
+                    };
+                    Some(view! {
+                        <div class={format!("drop-indicator {}", zone_class)}></div>
+                    })
+                } else {
+                    None
+                }
+            }}
             // Fixed-position context menu (outside toolbar to avoid clipping)
             {move || {
                 if menu_open.get() {

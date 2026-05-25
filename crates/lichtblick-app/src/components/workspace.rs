@@ -10,6 +10,7 @@ use crate::components::sidebar::Sidebar;
 use crate::components::panel_layout::PanelLayout;
 use crate::components::playback_controls::PlaybackControls;
 use crate::components::data_source_dialog::{DataSourceDialog, create_player_from_summary};
+use crate::components::settings_dialog::SettingsDialog;
 use crate::mcap_reader;
 use crate::state::app_state::use_app_state;
 
@@ -106,14 +107,15 @@ pub fn Workspace() -> impl IntoView {
                 />
                 <div class="workspace-main">
                     <PanelLayout />
-                    <PlaybackControls />
                 </div>
                 <Sidebar
                     side="right"
                     open=right_sidebar_open
                 />
             </div>
+            <PlaybackControls />
             <DataSourceDialog />
+            <SettingsDialog />
 
             // Drag overlay
             <div class="drag-overlay" class:visible=move || drag_over.get()>

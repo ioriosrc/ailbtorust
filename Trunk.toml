@@ -9,8 +9,8 @@ filehash = false
 no_minification = true
 
 [tools]
-# Use system-installed wasm-bindgen to avoid Trunk's cache dir race condition
-wasm_bindgen = "System"
+# Use system-installed wasm-bindgen (version must match the wasm-bindgen dependency)
+wasm_bindgen = "0.2.121"
 
 [watch]
 watch = ["crates", "web"]
