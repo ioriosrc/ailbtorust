@@ -122,12 +122,11 @@ pub fn ImagePanel(
             None => return,
         };
 
-        // Create a Blob URL from the image data
-        let array = js_sys::Uint8Array::new_with_length(decoded.data.len() as u32);
-        array.copy_from(&decoded.data);
+        // Create a Blob URL from the image data (zero-copy view into wasm memory)
+        let array = unsafe { js_sys::Uint8Array::view(&decoded.data) };
 
         let parts = js_sys::Array::new();
-        parts.push(&array.buffer());
+        parts.push(&array);
 
         let mime_type = match decoded.format.as_str() {
             "jpeg" | "jpg" => "image/jpeg",
@@ -323,11 +322,10 @@ fn ImagePanelInner(#[prop(into)] topic: String) -> impl IntoView {
             None => return,
         };
 
-        let array = js_sys::Uint8Array::new_with_length(decoded.data.len() as u32);
-        array.copy_from(&decoded.data);
+        let array = unsafe { js_sys::Uint8Array::view(&decoded.data) };
 
         let parts = js_sys::Array::new();
-        parts.push(&array.buffer());
+        parts.push(&array);
 
         let mime_type = match decoded.format.as_str() {
             "jpeg" | "jpg" => "image/jpeg",

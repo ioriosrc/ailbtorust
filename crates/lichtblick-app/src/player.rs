@@ -13,6 +13,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use leptos::prelude::*;
@@ -66,7 +67,7 @@ struct PlaybackState {
     /// Chunk index sorted by start time.
     chunk_indices: Vec<ChunkIndexEntry>,
     /// LRU cache of decoded chunks. Key = chunk_idx.
-    chunk_cache: Vec<CachedChunk>,
+    chunk_cache: VecDeque<CachedChunk>,
     /// Total bytes in cache.
     cache_bytes: usize,
     /// Per-topic latest message cache (for panels that just need "current" message).
@@ -150,7 +151,7 @@ impl McapPlayer {
             topics,
             channel_lookup,
             chunk_indices,
-            chunk_cache: Vec::new(),
+            chunk_cache: VecDeque::new(),
             cache_bytes: 0,
             latest_messages: HashMap::new(),
             current_time_ns: start_time_ns,
@@ -548,7 +549,7 @@ impl McapPlayer {
                         while state.cache_bytes + mem_bytes > MAX_CACHE_BYTES
                             && !state.chunk_cache.is_empty()
                         {
-                            let evicted = state.chunk_cache.remove(0);
+                            let evicted = state.chunk_cache.pop_front().unwrap();
                             state.cache_bytes -= evicted.mem_bytes;
                             state.loaded_chunk_indices.retain(|&i| i != evicted.chunk_idx);
                         }
@@ -565,7 +566,7 @@ impl McapPlayer {
                             }
                         }
 
-                        state.chunk_cache.push(CachedChunk {
+                        state.chunk_cache.push_back(CachedChunk {
                             chunk_idx,
                             messages,
                             mem_bytes,
@@ -732,12 +733,12 @@ fn load_chunk_from_blob(
                     while state.cache_bytes + mem_bytes > MAX_CACHE_BYTES
                         && !state.chunk_cache.is_empty()
                     {
-                        let evicted = state.chunk_cache.remove(0);
+                        let evicted = state.chunk_cache.pop_front().unwrap();
                         state.cache_bytes -= evicted.mem_bytes;
                         state.loaded_chunk_indices.retain(|&i| i != evicted.chunk_idx);
                     }
 
-                    state.chunk_cache.push(CachedChunk {
+                    state.chunk_cache.push_back(CachedChunk {
                         chunk_idx,
                         messages,
                         mem_bytes,
