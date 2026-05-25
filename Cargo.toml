@@ -53,6 +53,7 @@ web-sys = { version = "0.3", features = [
     "IdbObjectStore", "IdbRequest", "IdbOpenDbRequest",
     "IdbCursorWithValue", "IdbKeyRange",
     "DataTransfer", "DataTransferItemList", "DataTransferItem",
+    "Navigator", "Clipboard",
 ] }
 
 # UI Framework (Leptos)

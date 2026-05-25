@@ -240,6 +240,32 @@ impl McapPlayer {
         self.inner.borrow().topics.clone()
     }
 
+    /// Get the raw schema data for a given schema name.
+    /// Returns the schema bytes (e.g. ROS .msg text) if available.
+    pub fn get_schema_data(&self, schema_name: &str) -> Option<Vec<u8>> {
+        let state = self.inner.borrow();
+        for schema in state.summary.schemas.values() {
+            if schema.name == schema_name {
+                if schema.data.is_empty() {
+                    return None;
+                }
+                return Some(schema.data.clone());
+            }
+        }
+        None
+    }
+
+    /// Get the encoding type for a given topic.
+    pub fn get_topic_encoding(&self, topic: &str) -> Option<String> {
+        let state = self.inner.borrow();
+        for (_, (t, _, enc)) in &state.channel_lookup {
+            if t == topic {
+                return Some(enc.clone());
+            }
+        }
+        None
+    }
+
     /// Get per-topic statistics: message count and frequency (Hz).
     /// Calculated from loaded chunks in cache.
     pub fn topic_stats(&self) -> HashMap<String, (u64, f64)> {

@@ -32,6 +32,8 @@ pub struct SchemaInfo {
     pub id: u16,
     pub name: String,
     pub encoding: String,
+    /// Raw schema data (e.g. ROS .msg text) for field-level decoding.
+    pub data: Vec<u8>,
 }
 
 /// Channel info from the summary.
@@ -365,9 +367,20 @@ fn parse_schema_record(data: &[u8]) -> Option<SchemaInfo> {
 
     let name = read_prefixed_string(data, &mut pos)?;
     let encoding = read_prefixed_string(data, &mut pos)?;
-    // Skip schema_data (u32 len + bytes)
+    // Read schema_data (u32 len + bytes)
+    let schema_data = if pos + 4 <= data.len() {
+        let len = read_u32_le(&data[pos..]) as usize;
+        pos += 4;
+        if pos + len <= data.len() {
+            data[pos..pos + len].to_vec()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
 
-    Some(SchemaInfo { id, name, encoding })
+    Some(SchemaInfo { id, name, encoding, data: schema_data })
 }
 
 fn parse_channel_record(data: &[u8]) -> Option<ChannelInfo> {

@@ -6,6 +6,7 @@
 //! This is the main entry point for the Lichtblick web application compiled to WebAssembly.
 
 pub mod app;
+pub mod cdr_decoder;
 pub mod components;
 pub mod decoder;
 pub mod mcap_reader;

@@ -756,7 +756,7 @@ fn LayoutsTabContent() -> impl IntoView {
 }
 
 /// Import a layout from JSON string (supports both internal and Lichtblick format).
-fn import_layout_json(json: &str, layout: &LayoutState) {
+pub fn import_layout_json(json: &str, layout: &LayoutState) {
     // Try internal format first (has "type":"panel" or "type":"split")
     if json.contains(r#""type":"panel"#) || json.contains(r#""type":"split"#) {
         // Extract the layout field if wrapped, or use directly
@@ -971,7 +971,7 @@ fn PanelSettingsView(node_id: NodeId, node: LayoutNode) -> impl IntoView {
                 {match panel_type {
                     PanelType::Image => view! { <ImageSettings node_id=node_id topic=current_topic /> }.into_any(),
                     PanelType::ThreeDee => view! { <ThreeDeeSettings node_id=node_id /> }.into_any(),
-                    PanelType::RawMessages => view! { <TopicSelectSettings node_id=node_id topic=current_topic label="Topic" /> }.into_any(),
+                    PanelType::RawMessages => view! { <RawMessagesSettings node_id=node_id topic=current_topic /> }.into_any(),
                     PanelType::Log => view! { <TopicSelectSettings node_id=node_id topic=current_topic label="Topic" /> }.into_any(),
                     PanelType::Plot => view! { <TopicSelectSettings node_id=node_id topic=current_topic label="Topic" /> }.into_any(),
                     PanelType::StateTransitions => view! { <TopicSelectSettings node_id=node_id topic=current_topic label="Topic" /> }.into_any(),
@@ -1410,7 +1410,89 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
     }
 }
 
-/// Generic topic selector settings (for RawMessages, Log, Plot, etc).
+/// Raw Messages panel settings - Topic + Font Size.
+#[component]
+fn RawMessagesSettings(node_id: NodeId, topic: Option<String>) -> impl IntoView {
+    let layout = use_layout_state();
+    let current_topic = topic.unwrap_or_default();
+
+    let all_topics = move || -> Vec<String> {
+        get_player().map(|p| {
+            p.topics().iter()
+                .map(|t| t.name.clone())
+                .collect()
+        }).unwrap_or_default()
+    };
+
+    let current_topic_for_view = current_topic.clone();
+
+    let on_topic_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                let val = select.value();
+                let new_topic = if val.is_empty() { None } else { Some(val) };
+                layout.set_panel_topic(node_id, new_topic);
+            }
+        }
+    };
+
+    let on_font_size_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                let val = select.value();
+                layout.set_panel_font_size(node_id, val);
+            }
+        }
+    };
+
+    let current_font_size = move || {
+        layout.panel_font_sizes.with(|sizes| {
+            sizes.get(&node_id).cloned().unwrap_or_else(|| "Auto".to_string())
+        })
+    };
+
+    view! {
+        <div class="settings-section">
+            <h4 class="settings-section-title">{"▼ General"}</h4>
+            <div class="settings-row">
+                <label class="settings-label">{"Topic"}</label>
+                <select class="settings-select" on:change=on_topic_change>
+                    <option value="" selected=current_topic_for_view.is_empty()>{"— Select topic —"}</option>
+                    {move || all_topics().into_iter().map(|t| {
+                        let selected = t == current_topic;
+                        let t_val = t.clone();
+                        view! { <option value=t_val selected=selected>{t}</option> }
+                    }).collect::<Vec<_>>()}
+                </select>
+            </div>
+            <div class="settings-row">
+                <label class="settings-label">{"Font Size"}</label>
+                <select class="settings-select" on:change=on_font_size_change>
+                    <option value="Auto" selected=move || current_font_size() == "Auto">{"Auto"}</option>
+                    <option value="8px" selected=move || current_font_size() == "8px">{"8px"}</option>
+                    <option value="9px" selected=move || current_font_size() == "9px">{"9px"}</option>
+                    <option value="10px" selected=move || current_font_size() == "10px">{"10px"}</option>
+                    <option value="11px" selected=move || current_font_size() == "11px">{"11px"}</option>
+                    <option value="12px" selected=move || current_font_size() == "12px">{"12px"}</option>
+                    <option value="14px" selected=move || current_font_size() == "14px">{"14px"}</option>
+                    <option value="16px" selected=move || current_font_size() == "16px">{"16px"}</option>
+                    <option value="18px" selected=move || current_font_size() == "18px">{"18px"}</option>
+                    <option value="20px" selected=move || current_font_size() == "20px">{"20px"}</option>
+                    <option value="24px" selected=move || current_font_size() == "24px">{"24px"}</option>
+                    <option value="28px" selected=move || current_font_size() == "28px">{"28px"}</option>
+                    <option value="32px" selected=move || current_font_size() == "32px">{"32px"}</option>
+                    <option value="36px" selected=move || current_font_size() == "36px">{"36px"}</option>
+                    <option value="48px" selected=move || current_font_size() == "48px">{"48px"}</option>
+                    <option value="56px" selected=move || current_font_size() == "56px">{"56px"}</option>
+                    <option value="64px" selected=move || current_font_size() == "64px">{"64px"}</option>
+                    <option value="72px" selected=move || current_font_size() == "72px">{"72px"}</option>
+                </select>
+            </div>
+        </div>
+    }
+}
+
+/// Generic topic selector settings (for Log, Plot, etc).
 #[component]
 fn TopicSelectSettings(node_id: NodeId, topic: Option<String>, #[prop(into)] label: String) -> impl IntoView {
     let layout = use_layout_state();

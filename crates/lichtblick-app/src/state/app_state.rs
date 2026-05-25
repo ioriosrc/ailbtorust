@@ -253,6 +253,8 @@ pub struct LayoutState {
     pub saved_tree_json: RwSignal<String>,
     /// Panel currently being dragged (for DnD between panels).
     pub dragging_panel_id: RwSignal<Option<NodeId>>,
+    /// Per-panel font size overrides.
+    pub panel_font_sizes: RwSignal<HashMap<NodeId, String>>,
 }
 
 impl LayoutState {
@@ -275,6 +277,7 @@ impl LayoutState {
             is_dirty: RwSignal::new(false),
             saved_tree_json: RwSignal::new(saved_json),
             dragging_panel_id: RwSignal::new(None),
+            panel_font_sizes: RwSignal::new(HashMap::new()),
         }
     }
 
@@ -580,6 +583,13 @@ impl LayoutState {
             set_topic_in_tree(tree, node_id, new_topic);
         });
         self.mark_dirty();
+    }
+
+    /// Set font size for a panel.
+    pub fn set_panel_font_size(&self, node_id: NodeId, size: String) {
+        self.panel_font_sizes.update(|sizes| {
+            sizes.insert(node_id, size);
+        });
     }
 
     /// Get image config for a panel (creates default if not present).

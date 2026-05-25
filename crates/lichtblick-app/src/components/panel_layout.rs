@@ -244,7 +244,12 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
     let submenu_open = RwSignal::new(false);
     let drop_zone = RwSignal::new(Option::<DropPosition>::None);
 
-    let title = panel_type.display_name().to_string();
+    let title = if panel_type == PanelType::RawMessages {
+        String::new() // No title for Raw Messages - topic selector is in the panel's own toolbar
+    } else {
+        panel_type.display_name().to_string()
+    };
+    let hide_panel_toolbar = panel_type == PanelType::RawMessages;
 
     let on_settings = move |_: leptos::ev::MouseEvent| {
         layout.toggle_settings(node_id);
@@ -402,7 +407,9 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
                 on:dragstart=on_dragstart
                 on:dragend=on_dragend
             >
-                <span class="panel-title panel-drag-handle">{title}</span>
+                <span class="panel-title panel-drag-handle"
+                    style:display=move || if hide_panel_toolbar { "none" } else { "" }
+                >{title}</span>
                 {topic.clone().map(|t| view! {
                     <span class="panel-topic">{t}</span>
                 })}
@@ -508,11 +515,7 @@ fn PanelContent(panel_type: PanelType, topic: Option<String>, node_id: NodeId) -
         PanelType::ThreeDee => view! { <ThreeDeePanel /> }.into_any(),
         PanelType::RawMessages => {
             let t = topic.unwrap_or_default();
-            if t.is_empty() {
-                view! { <div class="panel-empty">{"Select a topic"}</div> }.into_any()
-            } else {
-                view! { <RawMessagesPanel topic=t /> }.into_any()
-            }
+            view! { <RawMessagesPanel topic=t /> }.into_any()
         }
         PanelType::DataSourceInfo => view! { <DataSourceInfoPanel /> }.into_any(),
         PanelType::Log => {

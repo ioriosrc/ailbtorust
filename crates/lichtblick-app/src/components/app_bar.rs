@@ -78,12 +78,33 @@ pub fn AppBar() -> impl IntoView {
 
     let on_import_layout = move |_: leptos::ev::MouseEvent| {
         close_app_menu();
+        let layout = use_layout_state();
         if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-            let input = document.create_element("input").ok();
-            if let Some(input) = input {
+            if let Some(input) = document.create_element("input").ok() {
                 input.set_attribute("type", "file").ok();
                 input.set_attribute("accept", ".json").ok();
                 if let Ok(html_input) = input.dyn_into::<web_sys::HtmlInputElement>() {
+                    let input_clone = html_input.clone();
+                    let onchange = wasm_bindgen::closure::Closure::once(move |_: web_sys::Event| {
+                        if let Some(files) = input_clone.files() {
+                            if let Some(file) = files.get(0) {
+                                let reader = web_sys::FileReader::new().unwrap();
+                                let reader_clone = reader.clone();
+                                let onload = wasm_bindgen::closure::Closure::once(move |_: web_sys::Event| {
+                                    if let Ok(result) = reader_clone.result() {
+                                        if let Some(text) = result.as_string() {
+                                            crate::components::sidebar::import_layout_json(&text, &layout);
+                                        }
+                                    }
+                                });
+                                reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+                                onload.forget();
+                                reader.read_as_text(&file).ok();
+                            }
+                        }
+                    });
+                    html_input.set_onchange(Some(onchange.as_ref().unchecked_ref()));
+                    onchange.forget();
                     html_input.click();
                 }
             }
