@@ -141,6 +141,217 @@ html, body {
     color: var(--text-primary);
 }
 
+/* ============ App Menu (Logo Dropdown) ============ */
+.app-menu-container {
+    position: relative;
+}
+
+.app-menu-trigger {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    color: var(--text-primary);
+    -webkit-app-region: no-drag;
+}
+
+.app-menu-trigger:hover {
+    background: var(--bg-hover);
+}
+
+.app-menu-arrow {
+    opacity: 0.6;
+}
+
+.app-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+}
+
+.app-menu-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    min-width: 140px;
+    z-index: 1000;
+    padding: 4px;
+}
+
+.app-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    font-size: 13px;
+    color: var(--text-primary);
+    border-radius: 4px;
+    cursor: pointer;
+    position: relative;
+    user-select: none;
+}
+
+.app-menu-item:hover {
+    background: var(--bg-hover);
+}
+
+.app-menu-item.has-submenu > svg {
+    opacity: 0.5;
+}
+
+.app-submenu {
+    position: absolute;
+    left: 100%;
+    top: -4px;
+    margin-left: 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    min-width: 220px;
+    padding: 4px;
+    z-index: 1001;
+}
+
+.app-submenu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 6px 12px;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: 4px;
+    text-align: left;
+    gap: 16px;
+}
+
+.app-submenu-item:hover {
+    background: var(--bg-hover);
+}
+
+.submenu-label {
+    white-space: nowrap;
+}
+
+.submenu-shortcut {
+    font-size: 11px;
+    color: var(--text-secondary);
+    opacity: 0.7;
+    font-family: system-ui, -apple-system, sans-serif;
+}
+
+.app-menu-separator {
+    height: 1px;
+    background: var(--border-color);
+    margin: 4px 8px;
+}
+
+.app-submenu-header {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+/* ============ Add Panel Button ============ */
+.add-panel-container {
+    position: relative;
+    margin-left: 4px;
+}
+
+.add-panel-btn {
+    border: 1px dashed var(--border-color) !important;
+}
+
+.add-panel-btn:hover {
+    border-color: var(--text-secondary) !important;
+}
+
+.add-panel-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+}
+
+.add-panel-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    width: 240px;
+    max-height: 360px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.add-panel-search {
+    padding: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.add-panel-search-input {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+}
+
+.add-panel-search-input:focus {
+    border-color: var(--accent-color, #5b9bd5);
+}
+
+.add-panel-search-input::placeholder {
+    color: var(--text-secondary);
+}
+
+.add-panel-list {
+    overflow-y: auto;
+    padding: 4px;
+}
+
+.add-panel-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 7px 12px;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: 4px;
+    text-align: left;
+}
+
+.add-panel-item:hover {
+    background: var(--bg-hover);
+}
+
 .app-bar-sidebar-toggle {
     background: none;
     border: none;

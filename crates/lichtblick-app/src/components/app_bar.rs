@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use leptos::prelude::*;
-use crate::state::app_state::use_app_state;
+use wasm_bindgen::JsCast;
+use crate::state::app_state::{use_app_state, use_layout_state, PanelType};
 
 /// Application bar at the top of the workspace.
 #[component]
@@ -19,6 +20,88 @@ pub fn AppBar() -> impl IntoView {
 
     let open_data_source = move |_| {
         state.data_source_dialog_open.set(true);
+    };
+
+    // App menu dropdown state
+    let app_menu_open = RwSignal::new(false);
+    let active_submenu = RwSignal::new(String::new());
+
+    let toggle_app_menu = move |_: leptos::ev::MouseEvent| {
+        app_menu_open.update(|open| *open = !*open);
+        if !app_menu_open.get_untracked() {
+            active_submenu.set(String::new());
+        }
+    };
+
+    let close_app_menu = move || {
+        app_menu_open.set(false);
+        active_submenu.set(String::new());
+    };
+
+    // File menu actions
+    let on_open = move |_: leptos::ev::MouseEvent| {
+        close_app_menu();
+        state.data_source_dialog_open.set(true);
+    };
+
+    let on_open_local = move |_: leptos::ev::MouseEvent| {
+        close_app_menu();
+        // Trigger native file picker
+        if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+            let input = document.create_element("input").ok();
+            if let Some(input) = input {
+                input.set_attribute("type", "file").ok();
+                input.set_attribute("accept", ".mcap,.bag,.ulog").ok();
+                input.set_attribute("multiple", "").ok();
+                if let Ok(html_input) = input.dyn_into::<web_sys::HtmlInputElement>() {
+                    html_input.click();
+                }
+            }
+        }
+    };
+
+    let on_open_connection = move |_: leptos::ev::MouseEvent| {
+        close_app_menu();
+        state.data_source_dialog_open.set(true);
+    };
+
+    // View menu actions
+    let on_toggle_left = move |_: leptos::ev::MouseEvent| {
+        close_app_menu();
+        state.left_sidebar_open.update(|open| *open = !*open);
+    };
+
+    let on_toggle_right = move |_: leptos::ev::MouseEvent| {
+        close_app_menu();
+        state.right_sidebar_open.update(|open| *open = !*open);
+    };
+
+    let on_import_layout = move |_: leptos::ev::MouseEvent| {
+        close_app_menu();
+        if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+            let input = document.create_element("input").ok();
+            if let Some(input) = input {
+                input.set_attribute("type", "file").ok();
+                input.set_attribute("accept", ".json").ok();
+                if let Ok(html_input) = input.dyn_into::<web_sys::HtmlInputElement>() {
+                    html_input.click();
+                }
+            }
+        }
+    };
+
+    // Help menu actions
+    let on_about = move |_: leptos::ev::MouseEvent| {
+        close_app_menu();
+        state.settings_tab.set("about".to_string());
+        state.settings_dialog_open.set(true);
+    };
+
+    let on_documentation = move |_: leptos::ev::MouseEvent| {
+        close_app_menu();
+        if let Some(window) = web_sys::window() {
+            window.open_with_url_and_target("https://lichtblick-suite.github.io/docs/", "_blank").ok();
+        }
     };
 
     // User menu dropdown state
@@ -59,9 +142,126 @@ pub fn AppBar() -> impl IntoView {
     view! {
         <header class="app-bar">
             <div class="app-bar-left">
-                <div class="app-bar-logo">
-                    <span class="logo-text">{"Lichtblick"}</span>
+                <div class="app-menu-container">
+                    <button class="app-menu-trigger" on:click=toggle_app_menu title="Menu">
+                        <span class="logo-text">{"Lichtblick"}</span>
+                        <svg class="app-menu-arrow" width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                            <path d="M2 3.5L5 7L8 3.5z"/>
+                        </svg>
+                    </button>
+                    {move || {
+                        if app_menu_open.get() {
+                            Some(view! {
+                                <div class="app-menu-backdrop" on:click=move |_: leptos::ev::MouseEvent| { close_app_menu(); }></div>
+                                <nav class="app-menu-dropdown">
+                                    // File submenu
+                                    <div
+                                        class="app-menu-item has-submenu"
+                                        on:mouseenter=move |_: leptos::ev::MouseEvent| { active_submenu.set("file".to_string()); }
+                                    >
+                                        <span>{"File"}</span>
+                                        <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+                                            <path d="M2 1L6 4L2 7z"/>
+                                        </svg>
+                                        {move || {
+                                            if active_submenu.get() == "file" {
+                                                Some(view! {
+                                                    <div class="app-submenu">
+                                                        <button class="app-submenu-item" on:click=on_open>
+                                                            <span class="submenu-label">{"Open..."}</span>
+                                                        </button>
+                                                        <button class="app-submenu-item" on:click=on_open_local>
+                                                            <span class="submenu-label">{"Open local file(s)..."}</span>
+                                                            <span class="submenu-shortcut">{"\u{2318}O"}</span>
+                                                        </button>
+                                                        <button class="app-submenu-item" on:click=on_open_connection>
+                                                            <span class="submenu-label">{"Open connection..."}</span>
+                                                            <span class="submenu-shortcut">{"\u{21E7}\u{2318}O"}</span>
+                                                        </button>
+                                                        <div class="app-menu-separator"></div>
+                                                        <div class="app-submenu-header">{"Recent data sources"}</div>
+                                                    </div>
+                                                })
+                                            } else {
+                                                None
+                                            }
+                                        }}
+                                    </div>
+                                    // View submenu
+                                    <div
+                                        class="app-menu-item has-submenu"
+                                        on:mouseenter=move |_: leptos::ev::MouseEvent| { active_submenu.set("view".to_string()); }
+                                    >
+                                        <span>{"View"}</span>
+                                        <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+                                            <path d="M2 1L6 4L2 7z"/>
+                                        </svg>
+                                        {move || {
+                                            if active_submenu.get() == "view" {
+                                                Some(view! {
+                                                    <div class="app-submenu">
+                                                        <button class="app-submenu-item" on:click=on_toggle_left>
+                                                            <span class="submenu-label">
+                                                                {move || if state.left_sidebar_open.get() { "Hide left sidebar" } else { "Show left sidebar" }}
+                                                            </span>
+                                                            <span class="submenu-shortcut">{"["}</span>
+                                                        </button>
+                                                        <button class="app-submenu-item" on:click=on_toggle_right>
+                                                            <span class="submenu-label">
+                                                                {move || if state.right_sidebar_open.get() { "Hide right sidebar" } else { "Show right sidebar" }}
+                                                            </span>
+                                                            <span class="submenu-shortcut">{"]"}</span>
+                                                        </button>
+                                                        <div class="app-menu-separator"></div>
+                                                        <button class="app-submenu-item" on:click=on_import_layout>
+                                                            <span class="submenu-label">{"Import layout from file..."}</span>
+                                                        </button>
+                                                    </div>
+                                                })
+                                            } else {
+                                                None
+                                            }
+                                        }}
+                                    </div>
+                                    // Help submenu
+                                    <div
+                                        class="app-menu-item has-submenu"
+                                        on:mouseenter=move |_: leptos::ev::MouseEvent| { active_submenu.set("help".to_string()); }
+                                    >
+                                        <span>{"Help"}</span>
+                                        <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
+                                            <path d="M2 1L6 4L2 7z"/>
+                                        </svg>
+                                        {move || {
+                                            if active_submenu.get() == "help" {
+                                                Some(view! {
+                                                    <div class="app-submenu">
+                                                        <button class="app-submenu-item" on:click=on_about>
+                                                            <span class="submenu-label">{"About"}</span>
+                                                        </button>
+                                                        <div class="app-menu-separator"></div>
+                                                        <button class="app-submenu-item" on:click=on_documentation>
+                                                            <span class="submenu-label">{"Documentation"}</span>
+                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="margin-left: auto; opacity: 0.5">
+                                                                <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+                                                            </svg>
+                                                        </button>
+                                                    </div>
+                                                })
+                                            } else {
+                                                None
+                                            }
+                                        }}
+                                    </div>
+                                </nav>
+                            })
+                        } else {
+                            None
+                        }
+                    }}
                 </div>
+                // Add Panel button
+                <AddPanelButton/>
             </div>
             <div class="app-bar-center">
                 <button
@@ -141,5 +341,94 @@ pub fn AppBar() -> impl IntoView {
                 </div>
             </div>
         </header>
+    }
+}
+
+/// "Add Panel" button with dropdown panel list and search.
+#[component]
+fn AddPanelButton() -> impl IntoView {
+    let layout = use_layout_state();
+    let panel_list_open = RwSignal::new(false);
+    let search_query = RwSignal::new(String::new());
+
+    let toggle_panel_list = move |_: leptos::ev::MouseEvent| {
+        panel_list_open.update(|open| *open = !*open);
+        search_query.set(String::new());
+    };
+
+    let close_panel_list = move || {
+        panel_list_open.set(false);
+        search_query.set(String::new());
+    };
+
+    let on_search_input = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                search_query.set(input.value());
+            }
+        }
+    };
+
+    view! {
+        <div class="add-panel-container">
+            <button
+                class="app-bar-sidebar-toggle add-panel-btn"
+                on:click=toggle_panel_list
+                title="Add panel"
+            >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M14 7H9V2H7v5H2v2h5v5h2V9h5z"/>
+                </svg>
+            </button>
+            {move || {
+                if panel_list_open.get() {
+                    let panels = PanelType::all();
+                    Some(view! {
+                        <div class="add-panel-backdrop" on:click=move |_: leptos::ev::MouseEvent| { close_panel_list(); }></div>
+                        <div class="add-panel-dropdown">
+                            <div class="add-panel-search">
+                                <input
+                                    type="text"
+                                    class="add-panel-search-input"
+                                    placeholder="Search panels..."
+                                    on:input=on_search_input
+                                    prop:value=move || search_query.get()
+                                />
+                            </div>
+                            <div class="add-panel-list">
+                                {panels.iter().map(|pt| {
+                                    let panel_type = pt.clone();
+                                    let display_name = pt.display_name().to_string();
+                                    let name_for_filter = display_name.clone();
+                                    let query = search_query;
+                                    let layout_clone = layout;
+                                    view! {
+                                        <button
+                                            class="add-panel-item"
+                                            style:display=move || {
+                                                let q = query.get().to_lowercase();
+                                                if q.is_empty() || name_for_filter.to_lowercase().contains(&q) {
+                                                    "flex"
+                                                } else {
+                                                    "none"
+                                                }
+                                            }
+                                            on:click=move |_: leptos::ev::MouseEvent| {
+                                                layout_clone.add_panel(panel_type.clone());
+                                                close_panel_list();
+                                            }
+                                        >
+                                            <span>{display_name.clone()}</span>
+                                        </button>
+                                    }
+                                }).collect::<Vec<_>>()}
+                            </div>
+                        </div>
+                    })
+                } else {
+                    None
+                }
+            }}
+        </div>
     }
 }

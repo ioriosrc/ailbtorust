@@ -629,6 +629,32 @@ impl LayoutState {
         self.mark_dirty();
     }
 
+    /// Add a new panel of the given type to the layout by splitting the root horizontally.
+    pub fn add_panel(&self, panel_type: PanelType) {
+        let new_id = self.gen_id();
+        let split_id = self.gen_id();
+        self.tree.update(|tree| {
+            let original = std::mem::replace(tree, LayoutNode::Panel {
+                id: 0,
+                panel_type: PanelType::ThreeDee,
+                topic: None,
+            });
+            let new_panel = LayoutNode::Panel {
+                id: new_id,
+                panel_type,
+                topic: None,
+            };
+            *tree = LayoutNode::Split {
+                id: split_id,
+                direction: SplitDirection::Horizontal,
+                ratio: 50.0,
+                first: Box::new(original),
+                second: Box::new(new_panel),
+            };
+        });
+        self.mark_dirty();
+    }
+
     /// Remove a panel from the layout (replace parent split with sibling).
     pub fn remove_panel(&self, node_id: NodeId) {
         self.tree.update(|tree| {
