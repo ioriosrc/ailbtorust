@@ -182,9 +182,9 @@ impl OrbitCamera {
     pub fn new() -> Self {
         Self {
             target: Vec3::new(0.0, 0.0, 0.0),
-            distance: 15.0,
-            azimuth: std::f32::consts::FRAC_PI_4,    // 45°
-            elevation: std::f32::consts::FRAC_PI_6,  // 30°
+            distance: 50.0,
+            azimuth: std::f32::consts::FRAC_PI_4,    // 45° (Theta)
+            elevation: std::f32::consts::FRAC_PI_6,  // 30° (~Phi 60° from zenith)
             fov_y: std::f32::consts::FRAC_PI_4,      // 45° fov
             perspective: true,
             near: 0.5,
@@ -222,7 +222,7 @@ impl OrbitCamera {
 
     pub fn zoom(&mut self, delta: f32) {
         self.distance *= (1.0 + delta * 0.001).max(0.1);
-        self.distance = self.distance.clamp(0.5, 500.0);
+        self.distance = self.distance.clamp(0.5, 5000.0);
     }
 
     pub fn pan(&mut self, dx: f32, dy: f32) {
@@ -325,6 +325,30 @@ uniform vec4 u_color;
 out vec4 outColor;
 void main() {
     outColor = u_color;
+}
+"#;
+
+// ============ Triangle Mesh Shader (per-vertex RGBA + model matrix) ============
+
+const TRIANGLE_MESH_VERT: &str = r#"#version 300 es
+precision highp float;
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec4 a_color;
+uniform mat4 u_viewProjection;
+uniform mat4 u_modelMatrix;
+out vec4 v_color;
+void main() {
+    v_color = a_color;
+    gl_Position = u_viewProjection * u_modelMatrix * vec4(a_position, 1.0);
+}
+"#;
+
+const TRIANGLE_MESH_FRAG: &str = r#"#version 300 es
+precision mediump float;
+in vec4 v_color;
+out vec4 outColor;
+void main() {
+    outColor = v_color;
 }
 "#;
 
@@ -454,6 +478,17 @@ struct SceneLine {
     points: Vec<f32>, // x,y,z triples
 }
 
+/// Triangle mesh primitive from SceneUpdate
+#[derive(Clone, Debug)]
+struct SceneTriangleMesh {
+    frame_id: String,
+    px: f32, py: f32, pz: f32,
+    ox: f32, oy: f32, oz: f32, ow: f32,
+    points: Vec<f32>,  // x,y,z triples (vertex positions)
+    colors: Vec<f32>,  // r,g,b,a per vertex
+    indices: Option<Vec<u32>>, // triangle indices (None = sequential)
+}
+
 /// Generate unit cube wireframe: 12 edges as line pairs
 fn generate_unit_cube_wireframe() -> Vec<f32> {
     // 8 vertices of unit cube centered at origin (-0.5 to 0.5)
@@ -562,6 +597,12 @@ struct SceneState {
     // Dynamic line buffer for scene lines
     scene_line_vao: WebGlVertexArrayObject,
     scene_line_buffer: WebGlBuffer,
+    // Triangle mesh rendering (per-vertex color)
+    tri_mesh_program: WebGlProgram,
+    tri_mesh_vao: WebGlVertexArrayObject,
+    tri_mesh_pos_buffer: WebGlBuffer,
+    tri_mesh_color_buffer: WebGlBuffer,
+    tri_mesh_index_buffer: WebGlBuffer,
     display_frame: String,
     follow_mode: String,
     camera: OrbitCamera,
@@ -676,6 +717,25 @@ impl SceneState {
         gl.vertex_attrib_pointer_with_i32(0, 3, GL::FLOAT, false, 0, 0);
         gl.bind_vertex_array(None);
 
+        // Compile triangle mesh shader (per-vertex color + model matrix)
+        let tri_vs = compile_shader(&gl, GL::VERTEX_SHADER, TRIANGLE_MESH_VERT)?;
+        let tri_fs = compile_shader(&gl, GL::FRAGMENT_SHADER, TRIANGLE_MESH_FRAG)?;
+        let tri_mesh_program = link_program(&gl, &tri_vs, &tri_fs)?;
+
+        // Create triangle mesh VAO with dynamic pos + color buffers
+        let tri_mesh_vao = gl.create_vertex_array().ok_or("Failed to create tri mesh VAO")?;
+        gl.bind_vertex_array(Some(&tri_mesh_vao));
+        let tri_mesh_pos_buffer = gl.create_buffer().ok_or("Failed to create tri mesh pos buffer")?;
+        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&tri_mesh_pos_buffer));
+        gl.enable_vertex_attrib_array(0);
+        gl.vertex_attrib_pointer_with_i32(0, 3, GL::FLOAT, false, 0, 0);
+        let tri_mesh_color_buffer = gl.create_buffer().ok_or("Failed to create tri mesh color buffer")?;
+        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&tri_mesh_color_buffer));
+        gl.enable_vertex_attrib_array(1);
+        gl.vertex_attrib_pointer_with_i32(1, 4, GL::FLOAT, false, 0, 0);
+        let tri_mesh_index_buffer = gl.create_buffer().ok_or("Failed to create tri mesh index buffer")?;
+        gl.bind_vertex_array(None);
+
         Ok(Self {
             gl,
             grid_program,
@@ -692,6 +752,11 @@ impl SceneState {
             cube_vertex_count,
             scene_line_vao,
             scene_line_buffer,
+            tri_mesh_program,
+            tri_mesh_vao,
+            tri_mesh_pos_buffer,
+            tri_mesh_color_buffer,
+            tri_mesh_index_buffer,
             display_frame: String::new(),
             follow_mode: "pose".into(),
             camera: OrbitCamera::new(),
@@ -840,6 +905,9 @@ impl SceneState {
         self.camera.target = self.camera.user_target;
 
         if !display_frame.is_empty() && follow_mode != "fixed" {
+            // In pose/position mode, camera orbits around (0,0,0) in display frame space.
+            // All entities are TF-transformed into the display frame, so the vehicle is at origin.
+            // Camera target = user_target (default 0,0,0 = ego vehicle position + user pan).
             TF_STATE.with(|tree| {
                 let tf = tree.borrow();
                 if let Some(world_frame) = tf.frames().first().cloned() {
@@ -849,11 +917,11 @@ impl SceneState {
                             .atan2(1.0 - 2.0 * (q.y * q.y + q.z * q.z)) as f32;
 
                         if follow_mode == "pose" {
-                            // Pose: camera focuses on vehicle (origin in local coords) + user pan.
-                            // Camera rotates with the vehicle (user azimuth is relative to vehicle heading).
+                            // Pose: camera rotates with vehicle (azimuth relative to vehicle heading).
+                            // user_azimuth is in vehicle-local coords, so no adjustment needed.
                         } else if follow_mode == "position" {
-                            // Position: camera focuses on vehicle (origin) + user pan.
-                            // Camera maintains global orientation (subtract vehicle yaw).
+                            // Position: camera maintains world orientation.
+                            // Subtract vehicle yaw so camera appears static as vehicle rotates.
                             self.camera.azimuth = self.camera.user_azimuth - yaw;
                         }
                     }
@@ -907,8 +975,12 @@ impl SceneState {
             if !grid.visible {
                 continue;
             }
-            // Compute model matrix: TF lookup for grid's frame_id
-            let model_matrix = if !display_frame.is_empty() && !grid.frame_id.is_empty() && grid.frame_id != display_frame {
+            // Grid is always drawn at the display frame origin (under the ego vehicle)
+            // when follow mode is active. Otherwise use TF.
+            let model_matrix = if !display_frame.is_empty() && follow_mode != "fixed" {
+                // In pose/position mode, grid stays at origin (= vehicle position)
+                Mat4::identity().data
+            } else if !display_frame.is_empty() && !grid.frame_id.is_empty() && grid.frame_id != display_frame {
                 TF_STATE.with(|tree| {
                     tree.borrow().lookup(&display_frame, &grid.frame_id, current_time_ns)
                         .map(|t| t.to_mat4_f32())
@@ -981,14 +1053,14 @@ impl SceneState {
             });
         }
 
-        // Draw scene entities (cubes and lines from SceneUpdate)
+        // Draw scene entities (cubes, lines, and triangles from SceneUpdate)
         let display_frame = self.display_frame.clone();
         let time_ns = self.current_time_ns;
         SCENE_ENTITIES.with(|entities| {
             let ent = entities.borrow();
-            let (cubes, lines) = &*ent;
+            let (cubes, lines, triangles) = &*ent;
 
-            if cubes.is_empty() && lines.is_empty() {
+            if cubes.is_empty() && lines.is_empty() && triangles.is_empty() {
                 return;
             }
 
@@ -1073,6 +1145,68 @@ impl SceneState {
                     };
                     gl.draw_arrays(draw_mode, 0, vertex_count);
                     total_lines += vertex_count / 2;
+                }
+            }
+
+            // Draw triangle meshes
+            if !triangles.is_empty() {
+                gl.use_program(Some(&self.tri_mesh_program));
+                let tri_vp_loc = gl.get_uniform_location(&self.tri_mesh_program, "u_viewProjection");
+                let tri_model_loc = gl.get_uniform_location(&self.tri_mesh_program, "u_modelMatrix");
+                gl.uniform_matrix4fv_with_f32_array(tri_vp_loc.as_ref(), false, &vp.data);
+
+                gl.bind_vertex_array(Some(&self.tri_mesh_vao));
+
+                for tri in triangles.iter() {
+                    if tri.points.is_empty() {
+                        continue;
+                    }
+
+                    // Get TF from display_frame to entity's frame_id
+                    let frame_tf = if !display_frame.is_empty() && !tri.frame_id.is_empty() {
+                        TF_STATE.with(|tree| {
+                            tree.borrow().lookup(&display_frame, &tri.frame_id, time_ns)
+                                .map(|t| t.to_mat4_f32())
+                        })
+                    } else {
+                        None
+                    };
+                    let frame_mat = frame_tf.map(|d| Mat4 { data: d }).unwrap_or_else(Mat4::identity);
+
+                    let tri_mat = build_model_matrix(
+                        tri.px, tri.py, tri.pz,
+                        tri.ox, tri.oy, tri.oz, tri.ow,
+                        1.0, 1.0, 1.0,
+                    );
+                    let model = frame_mat.multiply(&tri_mat);
+                    gl.uniform_matrix4fv_with_f32_array(tri_model_loc.as_ref(), false, &model.data);
+
+                    // Upload positions
+                    gl.bind_buffer(GL::ARRAY_BUFFER, Some(&self.tri_mesh_pos_buffer));
+                    unsafe {
+                        let array = js_sys::Float32Array::view(&tri.points);
+                        gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
+                    }
+
+                    // Upload per-vertex colors
+                    gl.bind_buffer(GL::ARRAY_BUFFER, Some(&self.tri_mesh_color_buffer));
+                    unsafe {
+                        let array = js_sys::Float32Array::view(&tri.colors);
+                        gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
+                    }
+
+                    // Draw with or without indices
+                    if let Some(ref indices) = tri.indices {
+                        gl.bind_buffer(GL::ELEMENT_ARRAY_BUFFER, Some(&self.tri_mesh_index_buffer));
+                        unsafe {
+                            let array = js_sys::Uint32Array::view(indices);
+                            gl.buffer_data_with_array_buffer_view(GL::ELEMENT_ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
+                        }
+                        gl.draw_elements_with_i32(GL::TRIANGLES, indices.len() as i32, GL::UNSIGNED_INT, 0);
+                    } else {
+                        let vertex_count = (tri.points.len() / 3) as i32;
+                        gl.draw_arrays(GL::TRIANGLES, 0, vertex_count);
+                    }
                 }
             }
         });
@@ -1637,9 +1771,10 @@ fn parse_js_frame_transform(obj: &JsValue) -> Option<StampedTransform> {
 }
 
 /// Parse the JS object returned by js_convert_message_to_scene into (Vec<SceneCube>, Vec<SceneLine>)
-fn parse_scene_update_result(result: &JsValue) -> (Vec<SceneCube>, Vec<SceneLine>) {
+fn parse_scene_update_result(result: &JsValue) -> (Vec<SceneCube>, Vec<SceneLine>, Vec<SceneTriangleMesh>) {
     let mut cubes = Vec::new();
     let mut lines = Vec::new();
+    let mut triangles = Vec::new();
 
     let get_f32 = |obj: &JsValue, key: &str| -> f32 {
         js_sys::Reflect::get(obj, &JsValue::from_str(key))
@@ -1714,7 +1849,73 @@ fn parse_scene_update_result(result: &JsValue) -> (Vec<SceneCube>, Vec<SceneLine
         }
     }
 
-    (cubes, lines)
+    // Parse triangles array
+    if let Ok(tri_val) = js_sys::Reflect::get(result, &JsValue::from_str("triangles")) {
+        if let Ok(arr) = js_sys::Array::try_from(tri_val) {
+            for i in 0..arr.length() {
+                let t = arr.get(i);
+                let frame_id = get_str(&t, "frame_id");
+                let px = get_f32(&t, "px");
+                let py = get_f32(&t, "py");
+                let pz = get_f32(&t, "pz");
+                let ox = get_f32(&t, "ox");
+                let oy = get_f32(&t, "oy");
+                let oz = get_f32(&t, "oz");
+                let ow = { let w = get_f32(&t, "ow"); if w == 0.0 { 1.0 } else { w } };
+
+                // Parse points flat array [x,y,z, ...]
+                let mut points = Vec::new();
+                if let Ok(pts_val) = js_sys::Reflect::get(&t, &JsValue::from_str("points")) {
+                    if let Ok(pts_arr) = js_sys::Array::try_from(pts_val) {
+                        for j in 0..pts_arr.length() {
+                            if let Some(v) = pts_arr.get(j).as_f64() {
+                                points.push(v as f32);
+                            }
+                        }
+                    }
+                }
+
+                // Parse colors flat array [r,g,b,a, ...]
+                let mut colors = Vec::new();
+                if let Ok(col_val) = js_sys::Reflect::get(&t, &JsValue::from_str("colors")) {
+                    if let Ok(col_arr) = js_sys::Array::try_from(col_val) {
+                        for j in 0..col_arr.length() {
+                            if let Some(v) = col_arr.get(j).as_f64() {
+                                colors.push(v as f32);
+                            }
+                        }
+                    }
+                }
+
+                // Parse indices (optional)
+                let indices = if let Ok(idx_val) = js_sys::Reflect::get(&t, &JsValue::from_str("indices")) {
+                    if idx_val.is_null() || idx_val.is_undefined() {
+                        None
+                    } else if let Ok(idx_arr) = js_sys::Array::try_from(idx_val) {
+                        let mut idx = Vec::new();
+                        for j in 0..idx_arr.length() {
+                            if let Some(v) = idx_arr.get(j).as_f64() {
+                                idx.push(v as u32);
+                            }
+                        }
+                        if idx.is_empty() { None } else { Some(idx) }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if !points.is_empty() {
+                    triangles.push(SceneTriangleMesh {
+                        frame_id, px, py, pz, ox, oy, oz, ow, points, colors, indices,
+                    });
+                }
+            }
+        }
+    }
+
+    (cubes, lines, triangles)
 }
 
 // ============ Thread-local Scene Storage ============
@@ -1722,8 +1923,8 @@ fn parse_scene_update_result(result: &JsValue) -> (Vec<SceneCube>, Vec<SceneLine
 thread_local! {
     static SCENE: std::cell::RefCell<Option<SceneState>> = std::cell::RefCell::new(None);
     static TF_STATE: std::cell::RefCell<TfTree> = std::cell::RefCell::new(TfTree::new());
-    /// Scene entities (cubes, lines) from SceneUpdate converters.
-    static SCENE_ENTITIES: std::cell::RefCell<(Vec<SceneCube>, Vec<SceneLine>)> = std::cell::RefCell::new((Vec::new(), Vec::new()));
+    /// Scene entities (cubes, lines, triangle meshes) from SceneUpdate converters.
+    static SCENE_ENTITIES: std::cell::RefCell<(Vec<SceneCube>, Vec<SceneLine>, Vec<SceneTriangleMesh>)> = std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new()));
     /// Cache of compiled prost-reflect DescriptorPools keyed by schema name.
     static PROTO_POOLS: std::cell::RefCell<std::collections::HashMap<String, prost_reflect::DescriptorPool>> = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Tracks schemas that failed to compile (don't retry).
@@ -1766,8 +1967,10 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
 
     // Timestamp cache: skip re-processing messages that haven't changed
     let last_processed_times = RwSignal::new(std::collections::HashMap::<String, u64>::new());
+    // Track if camera has been auto-centered on first scene data
+    let has_centered = RwSignal::new(false);
 
-    // Initialize WebGL on mount
+    // Initialize WebGL on mount (with retry if parent has no dimensions yet)
     Effect::new(move |_| {
         if has_scene() {
             return;
@@ -1775,12 +1978,50 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
         let Some(canvas_el) = canvas_ref.get() else {
             return;
         };
-        let canvas: HtmlCanvasElement = canvas_el.into();
+        let canvas: HtmlCanvasElement = canvas_el.clone().into();
 
-        // Set canvas size to match parent
+        // Get parent dimensions - if 0, schedule a retry via rAF
         let parent = canvas.parent_element().unwrap();
-        let w = parent.client_width().max(200) as u32;
-        let h = parent.client_height().max(200) as u32;
+        let w = parent.client_width() as u32;
+        let h = parent.client_height() as u32;
+
+        if w == 0 || h == 0 {
+            // Parent hasn't laid out yet; schedule retry
+            let retry_canvas = canvas.clone();
+            let retry = Closure::once(move || {
+                if has_scene() {
+                    return;
+                }
+                let parent = retry_canvas.parent_element().unwrap();
+                let w = parent.client_width().max(300) as u32;
+                let h = parent.client_height().max(200) as u32;
+                retry_canvas.set_width(w);
+                retry_canvas.set_height(h);
+
+                let gl: GL = retry_canvas
+                    .get_context("webgl2")
+                    .unwrap()
+                    .unwrap()
+                    .dyn_into()
+                    .unwrap();
+
+                match SceneState::new(gl, w, h) {
+                    Ok(mut s) => {
+                        s.render();
+                        set_scene(s);
+                        web_sys::console::log_1(&format!("[3D] Scene initialized (retry) {}x{}", w, h).into());
+                    }
+                    Err(e) => {
+                        web_sys::console::error_1(&format!("[3D] Init error (retry): {}", e).into());
+                    }
+                }
+            });
+            let window = web_sys::window().unwrap();
+            let _ = window.request_animation_frame(retry.as_ref().unchecked_ref());
+            retry.forget();
+            return;
+        }
+
         canvas.set_width(w);
         canvas.set_height(h);
 
@@ -1795,11 +2036,51 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             Ok(mut s) => {
                 s.render();
                 set_scene(s);
+                web_sys::console::log_1(&format!("[3D] Scene initialized {}x{}", w, h).into());
             }
             Err(e) => {
-                web_sys::console::error_1(&format!("3D init error: {}", e).into());
+                web_sys::console::error_1(&format!("[3D] Init error: {}", e).into());
             }
         }
+    });
+
+    // ResizeObserver: update canvas dimensions when panel resizes
+    Effect::new(move |_| {
+        let Some(canvas_el) = canvas_ref.get() else {
+            return;
+        };
+        let canvas: HtmlCanvasElement = canvas_el.into();
+        let parent = match canvas.parent_element() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let canvas_for_observer = canvas.clone();
+        let cb = Closure::<dyn FnMut(JsValue)>::new(move |_entries: JsValue| {
+            let parent = canvas_for_observer.parent_element().unwrap();
+            let w = parent.client_width() as u32;
+            let h = parent.client_height() as u32;
+            if w == 0 || h == 0 {
+                return;
+            }
+            let cur_w = canvas_for_observer.width();
+            let cur_h = canvas_for_observer.height();
+            if w != cur_w || h != cur_h {
+                canvas_for_observer.set_width(w);
+                canvas_for_observer.set_height(h);
+                with_scene_mut(|s| {
+                    s.canvas_width = w;
+                    s.canvas_height = h;
+                    s.render();
+                });
+            }
+        });
+
+        let observer = web_sys::ResizeObserver::new(cb.as_ref().unchecked_ref()).unwrap();
+        observer.observe(&parent);
+        // Prevent gc of closure + observer
+        cb.forget();
+        std::mem::forget(observer);
     });
 
     // Orbit camera controls (using thread_local Rc for non-Send state)
@@ -1894,6 +2175,8 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
     // Update point cloud and TF tree from player data on frame tick
     Effect::new(move |_| {
         let _tick = state.frame_tick.get();
+        // Re-run when a file is loaded (has_active_layout changes to true)
+        let _has_layout = state.has_active_layout.get();
         // Also re-run when 3D config changes (background color, grid, etc.)
         layout.three_dee_configs.track();
 
@@ -1921,6 +2204,9 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             s.camera.near = cfg.view.near as f32;
             s.camera.far = cfg.view.far as f32;
             s.camera.distance = cfg.view.distance as f32;
+            // Apply theta/phi from config (degrees -> radians) as initial user values
+            s.camera.user_azimuth = (cfg.view.theta as f32).to_radians();
+            s.camera.user_elevation = (cfg.view.phi as f32).to_radians().min(1.4);
 
             // Follow mode
             s.follow_mode = cfg.follow_mode.clone();
@@ -2063,15 +2349,33 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
                 // Decode protobuf in Rust using prost-reflect
                 let js_obj = PROTO_POOLS.with(|pools| {
                     let pools_ref = pools.borrow();
-                    let pool = pools_ref.get(&topic_info.schema_name)?;
-                    let message_desc = pool.get_message_by_name(&topic_info.schema_name)?;
+                    let pool = match pools_ref.get(&topic_info.schema_name) {
+                        Some(p) => p,
+                        None => {
+                            web_sys::console::warn_1(&format!("[3D] No pool for schema: {}", topic_info.schema_name).into());
+                            return None;
+                        }
+                    };
+                    let message_desc = match pool.get_message_by_name(&topic_info.schema_name) {
+                        Some(d) => d,
+                        None => {
+                            // List available message names for debugging
+                            let available: Vec<String> = pool.all_messages().map(|m| m.full_name().to_string()).collect();
+                            web_sys::console::warn_1(&format!(
+                                "[3D] Message '{}' not found in pool. Available: {:?}",
+                                topic_info.schema_name,
+                                &available[..available.len().min(10)]
+                            ).into());
+                            return None;
+                        }
+                    };
                     match prost_reflect::DynamicMessage::decode(message_desc, msg.data.as_slice()) {
                         Ok(dynamic_msg) => {
                             // Convert DynamicMessage to JsValue with snake_case field names
                             Some(dynamic_message_to_js(&dynamic_msg))
                         }
                         Err(e) => {
-                            log::warn!("Failed to decode proto message {}: {}", topic_info.schema_name, e);
+                            web_sys::console::warn_1(&format!("[3D] Failed to decode proto {}: {}", topic_info.schema_name, e).into());
                             None
                         }
                     }
@@ -2102,12 +2406,50 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
                     // Call SceneUpdate converter
                     let scene_result = js_convert_message_to_scene(&topic_info.schema_name, message_obj, config_js);
                     if !scene_result.is_null() && !scene_result.is_undefined() {
-                        let (cubes, lines) = parse_scene_update_result(&scene_result);
-                        if !cubes.is_empty() || !lines.is_empty() {
+                        let (cubes, lines, triangles) = parse_scene_update_result(&scene_result);
+                        if !cubes.is_empty() || !lines.is_empty() || !triangles.is_empty() {
+                            // Auto-center camera only when no display frame / TF is available
+                            let need_center = !has_centered.get_untracked();
+                            let has_display_frame = !state.display_frame.get_untracked().is_empty();
+                            if need_center && !triangles.is_empty() && !has_display_frame {
+                                // No TF/display frame - center on scene data centroid
+                                let mut cx = 0.0f64;
+                                let mut cy = 0.0f64;
+                                let mut cz = 0.0f64;
+                                let mut count = 0u32;
+                                for tri in triangles.iter().take(50) {
+                                    for chunk in tri.points.chunks(3) {
+                                        if chunk.len() == 3 {
+                                            cx += chunk[0] as f64;
+                                            cy += chunk[1] as f64;
+                                            cz += chunk[2] as f64;
+                                            count += 1;
+                                        }
+                                    }
+                                    if count > 500 { break; }
+                                }
+                                if count > 0 {
+                                    cx /= count as f64;
+                                    cy /= count as f64;
+                                    cz /= count as f64;
+                                    with_scene_mut(|s| {
+                                        s.camera.user_target = Vec3::new(cx as f32, cy as f32, cz as f32);
+                                        s.camera.target = s.camera.user_target;
+                                        s.camera.distance = 200.0;
+                                        s.camera.user_elevation = 1.0;
+                                    });
+                                }
+                                has_centered.set(true);
+                            } else if need_center && has_display_frame {
+                                // TF active - camera orbits around display frame origin
+                                has_centered.set(true);
+                            }
+
                             SCENE_ENTITIES.with(|ent| {
                                 let mut e = ent.borrow_mut();
                                 e.0 = cubes;
                                 e.1 = lines;
+                                e.2 = triangles;
                             });
                             with_scene_mut(|s| {
                                 s.render();
@@ -2191,7 +2533,7 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
     let on_mouseup_clone = on_mouseup.clone();
 
     view! {
-        <div class="panel-3d-canvas-container" style="position:relative;">
+        <div class="panel-3d-canvas-container">
             <canvas
                 node_ref=canvas_ref
                 class="panel-3d-canvas"

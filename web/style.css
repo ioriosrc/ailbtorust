@@ -1397,8 +1397,11 @@ body.splitter-dragging-v {
 }
 
 .panel-3d-canvas-container {
-    flex: 1;
-    position: relative;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     overflow: hidden;
     background: #1e1e22;
 }

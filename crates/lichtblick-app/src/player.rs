@@ -658,6 +658,11 @@ impl McapPlayer {
                     )
                     .ok();
                 load_next.forget();
+            } else {
+                // All chunks loaded - signal panels to render available data
+                let mut state = inner_clone.borrow_mut();
+                state.frame_counter += 1;
+                app_state.frame_tick.set(state.frame_counter);
             }
         });
 
@@ -792,10 +797,15 @@ fn load_chunk_from_blob(
                     });
                     state.cache_bytes += mem_bytes;
                     state.loaded_chunk_indices.push(chunk_idx);
-                    // Do NOT bump frame_counter here - let the playback loop handle rendering
                 }
 
-                // No frame_tick signal - chunk loading is invisible to rendering
+                // Signal panels to re-render with newly available data
+                // (especially important when file is loaded but not yet playing)
+                if remaining.is_empty() {
+                    let mut state = inner_clone.borrow_mut();
+                    state.frame_counter += 1;
+                    app_state.frame_tick.set(state.frame_counter);
+                }
             }
             Err(e) => {
                 log::warn!("Failed to parse chunk {}: {}", chunk_idx, e);

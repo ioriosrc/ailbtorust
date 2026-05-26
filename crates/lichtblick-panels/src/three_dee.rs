@@ -100,7 +100,7 @@ impl Default for ViewConfig {
     fn default() -> Self {
         Self {
             sync_camera: false,
-            distance: 150.0,
+            distance: 50.0,
             perspective: true,
             target: [0.0, 0.0, 0.0],
             theta: 45.0,

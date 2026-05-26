@@ -393,6 +393,7 @@ export function js_convert_message_to_scene(fromSchemaName, messageObj, topicCon
 
     const cubes = [];
     const lines = [];
+    const triangles = [];
     for (const entry of converters) {
         if (entry.toSchemaName !== 'foxglove.SceneUpdate') continue;
         try {
@@ -450,13 +451,48 @@ export function js_convert_message_to_scene(fromSchemaName, messageObj, topicCon
                         }
                     }
                 }
+
+                // Extract triangles
+                if (entity.triangles) {
+                    for (const t of entity.triangles) {
+                        const pos = t.pose?.position || {};
+                        const ori = t.pose?.orientation || {};
+                        const baseCol = t.color || {};
+                        const pts = [];
+                        const colors = [];
+                        if (t.points) {
+                            for (let i = 0; i < t.points.length; i++) {
+                                const p = t.points[i];
+                                pts.push(p.x || 0, p.y || 0, p.z || 0);
+                                // Per-vertex color or fall back to base color
+                                const vc = (t.colors && t.colors[i]) || baseCol;
+                                colors.push(
+                                    vc.r != null ? vc.r : 1,
+                                    vc.g != null ? vc.g : 1,
+                                    vc.b != null ? vc.b : 1,
+                                    vc.a != null ? vc.a : 1
+                                );
+                            }
+                        }
+                        if (pts.length > 0) {
+                            triangles.push({
+                                frame_id,
+                                px: pos.x || 0, py: pos.y || 0, pz: pos.z || 0,
+                                ox: ori.x || 0, oy: ori.y || 0, oz: ori.z || 0, ow: ori.w != null ? ori.w : 1,
+                                points: pts,
+                                colors: colors,
+                                indices: t.indices && t.indices.length > 0 ? Array.from(t.indices) : null,
+                            });
+                        }
+                    }
+                }
             }
         } catch (e) {
             console.error('[Extension] SceneUpdate converter error:', entry.extensionId, e);
         }
     }
-    if (cubes.length === 0 && lines.length === 0) return null;
-    return { cubes, lines };
+    if (cubes.length === 0 && lines.length === 0 && triangles.length === 0) return null;
+    return { cubes, lines, triangles };
 }
 "#)]
 extern "C" {

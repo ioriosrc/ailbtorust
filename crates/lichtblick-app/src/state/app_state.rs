@@ -7,7 +7,7 @@ use std::rc::Rc;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use lichtblick_core::settings::ColorScheme;
-use lichtblick_panels::three_dee::ThreeDeeConfig;
+use lichtblick_panels::three_dee::{ThreeDeeConfig, TopicDisplayConfig, ViewConfig, SceneConfig};
 
 use crate::player::McapPlayer;
 
@@ -296,6 +296,9 @@ impl LayoutState {
             _ => return,
         };
 
+        // Ensure built-in layouts exist
+        self.ensure_builtin_layouts(&storage);
+
         // Load saved layout names
         if let Ok(Some(names_json)) = storage.get_item("lichtblick:layout_names") {
             let names: Vec<String> = names_json
@@ -328,6 +331,14 @@ impl LayoutState {
                 self.is_dirty.set(false);
             }
         }
+
+        // Load three_dee_configs for this layout
+        let configs_key = format!("lichtblick:layout_configs:{}", active_name);
+        if let Ok(Some(configs_json)) = storage.get_item(&configs_key) {
+            if let Ok(configs) = serde_json::from_str::<HashMap<NodeId, ThreeDeeConfig>>(&configs_json) {
+                self.three_dee_configs.set(configs);
+            }
+        }
     }
 
     /// Save current layout to localStorage.
@@ -348,6 +359,15 @@ impl LayoutState {
         let key = format!("lichtblick:layout:{}", name);
         storage.set_item(&key, &tree_json).ok();
         storage.set_item("lichtblick:active_layout", &name).ok();
+
+        // Also persist three_dee_configs
+        let configs = self.three_dee_configs.get_untracked();
+        if !configs.is_empty() {
+            if let Ok(configs_json) = serde_json::to_string(&configs) {
+                let configs_key = format!("lichtblick:layout_configs:{}", name);
+                storage.set_item(&configs_key, &configs_json).ok();
+            }
+        }
 
         // Update saved names list
         self.saved_layout_names.update(|names| {
@@ -529,6 +549,17 @@ impl LayoutState {
             self.is_dirty.set(false);
             storage.set_item("lichtblick:active_layout", name).ok();
         }
+
+        // Load three_dee_configs for this layout
+        let configs_key = format!("lichtblick:layout_configs:{}", name);
+        if let Ok(Some(configs_json)) = storage.get_item(&configs_key) {
+            if let Ok(configs) = serde_json::from_str::<HashMap<NodeId, ThreeDeeConfig>>(&configs_json) {
+                self.three_dee_configs.set(configs);
+            }
+        } else {
+            // No saved configs - clear to defaults
+            self.three_dee_configs.set(HashMap::new());
+        }
     }
 
     /// Export current layout as JSON string.
@@ -569,6 +600,85 @@ impl LayoutState {
         let names = self.saved_layout_names.get_untracked();
         let joined = names.join("\n");
         storage.set_item("lichtblick:layout_names", &joined).ok();
+    }
+
+    /// Ensure built-in layouts exist in localStorage.
+    fn ensure_builtin_layouts(&self, storage: &web_sys::Storage) {
+        // Check if "Simulation" layout already exists
+        let sim_key = "lichtblick:layout:Simulation";
+        if storage.get_item(sim_key).ok().flatten().is_some() {
+            return; // Already exists
+        }
+
+        // Create Simulation layout tree: Split(3D + RawMessages, column)
+        let sim_tree_json = r#"{"type":"split","id":1,"direction":"column","ratio":70.0,"first":{"type":"panel","id":2,"panelType":"3D","topic":"ConvertedTrace"},"second":{"type":"panel","id":3,"panelType":"RawMessages","topic":"ConvertedTrace"}}"#;
+        storage.set_item(sim_key, sim_tree_json).ok();
+
+        // Create the three_dee_config for node 2 (the 3D panel)
+        let simulation_config = ThreeDeeConfig {
+            title: "3D".into(),
+            display_frame: "ego_vehicle_bb_center".into(),
+            follow_mode: "pose".into(),
+            scene: SceneConfig {
+                enable_stats: false,
+                background_color: "#303030".into(),
+                label_scale: 1.0,
+                ignore_collada_up_axis: false,
+                mesh_up_axis: "y_up".into(),
+            },
+            view: ViewConfig {
+                sync_camera: false,
+                distance: 50.0,
+                perspective: true,
+                target: [0.0, 0.0, 0.0],
+                theta: 45.0,
+                phi: 60.0,
+                fovy: 45.0,
+                near: 0.5,
+                far: 5000.0,
+            },
+            topics: {
+                let mut topics = HashMap::new();
+                topics.insert("ConvertedTrace".into(), TopicDisplayConfig {
+                    visible: true,
+                    color: None,
+                    show_outlines: true,
+                    caching: true,
+                    show_axes: true,
+                    show_physical_lanes: true,
+                    show_logical_lanes: false,
+                    show_reference_lines: true,
+                    show_bounding_box: true,
+                    show_3d_models: false,
+                    default_model_path: "/opt/models/vehicles/".into(),
+                });
+                topics
+            },
+            ..ThreeDeeConfig::default()
+        };
+
+        let mut configs: HashMap<NodeId, ThreeDeeConfig> = HashMap::new();
+        configs.insert(2, simulation_config);
+        if let Ok(configs_json) = serde_json::to_string(&configs) {
+            let configs_key = "lichtblick:layout_configs:Simulation";
+            storage.set_item(configs_key, &configs_json).ok();
+        }
+
+        // Add "Simulation" to the layout names list
+        let names_key = "lichtblick:layout_names";
+        let mut names: Vec<String> = storage
+            .get_item(names_key)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .split('\n')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        if !names.contains(&"Simulation".to_string()) {
+            names.push("Simulation".to_string());
+            storage.set_item(names_key, &names.join("\n")).ok();
+        }
     }
 
     /// Toggle settings sidebar for a given panel.

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (C) 2023-2026 Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
 // SPDX-License-Identifier: MPL-2.0
 
+use std::collections::HashMap;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -12,7 +13,7 @@ use crate::state::app_state::{
     AppState, LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
     parse_layout_node_internal,
 };
-use lichtblick_panels::three_dee::TopicDisplayConfig;
+use lichtblick_panels::three_dee::{ThreeDeeConfig, TopicDisplayConfig};
 use crate::panels::three_dee_panel::get_tf_frame_metadata;
 
 /// Sidebar component (left or right) with drag-resizable width.
@@ -787,14 +788,255 @@ pub fn import_layout_json(json: &str, layout: &LayoutState) {
     if let Some(layout_value) = extract_json_field(json, "layout") {
         if let Some(tree) = parse_layout_node(layout_value, &mut 1) {
             let next_id = count_nodes(&tree) as u32 + 1;
-            layout.tree.set(tree);
+            layout.tree.set(tree.clone());
             layout.next_id.set(next_id);
+
+            // Parse configById and apply three_dee_configs
+            if let Some(config_by_id_json) = extract_json_field(json, "configById") {
+                apply_config_by_id(config_by_id_json, &tree, layout);
+            }
+
             // Generate a name for the imported layout
             let name = generate_unique_import_name(layout);
             layout.current_layout_name.set(name);
             layout.save_current();
         }
     }
+}
+
+/// Parse configById from Lichtblick Node.js format and apply to three_dee_configs.
+fn apply_config_by_id(config_json: &str, tree: &LayoutNode, layout: &LayoutState) {
+    // Find all 3D panels in the tree and their corresponding config keys
+    let panels = collect_panels(tree);
+
+    for (node_id, panel_type, _panel_key_index) in &panels {
+        if *panel_type != PanelType::ThreeDee {
+            continue;
+        }
+
+        // Try to find a matching 3D config in configById
+        // The Node.js format uses keys like "3D!9p554p" - we look for any key starting with "3D!"
+        if let Some(panel_config_json) = find_3d_config_in_json(config_json) {
+            let config = parse_lichtblick_3d_config(panel_config_json);
+            layout.update_three_dee_config(*node_id, |c| *c = config);
+        }
+    }
+}
+
+/// Collect all panels from the layout tree as (NodeId, PanelType, index).
+fn collect_panels(node: &LayoutNode) -> Vec<(NodeId, PanelType, usize)> {
+    let mut result = Vec::new();
+    collect_panels_recursive(node, &mut result, &mut 0);
+    result
+}
+
+fn collect_panels_recursive(node: &LayoutNode, result: &mut Vec<(NodeId, PanelType, usize)>, index: &mut usize) {
+    match node {
+        LayoutNode::Panel { id, panel_type, .. } => {
+            result.push((*id, panel_type.clone(), *index));
+            *index += 1;
+        }
+        LayoutNode::Split { first, second, .. } => {
+            collect_panels_recursive(first, result, index);
+            collect_panels_recursive(second, result, index);
+        }
+    }
+}
+
+/// Find first 3D panel config object in configById JSON.
+fn find_3d_config_in_json(config_by_id: &str) -> Option<&str> {
+    // Look for "3D!" prefix in keys (e.g. "3D!9p554p": {...})
+    let marker = r#""3D!"#;
+    let pos = config_by_id.find(marker)?;
+    // Skip past the key to find the value object
+    let after_key = &config_by_id[pos..];
+    let colon_pos = after_key.find(':')?;
+    let after_colon = after_key[colon_pos + 1..].trim_start();
+    if !after_colon.starts_with('{') {
+        return None;
+    }
+    // Find matching brace
+    let mut depth = 0;
+    for (i, c) in after_colon.chars().enumerate() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&after_colon[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse a Lichtblick Node.js 3D panel config into our ThreeDeeConfig.
+fn parse_lichtblick_3d_config(json: &str) -> ThreeDeeConfig {
+    let mut config = ThreeDeeConfig::default();
+
+    // followMode: "follow-pose" | "follow-position" | "follow-none"
+    if let Some(fm) = extract_string_value(json, "followMode") {
+        config.follow_mode = match fm {
+            "follow-pose" => "pose".into(),
+            "follow-position" => "position".into(),
+            "follow-none" => "fixed".into(),
+            _ => "pose".into(),
+        };
+    }
+
+    // followTf: the display frame
+    if let Some(tf) = extract_string_value(json, "followTf") {
+        config.display_frame = tf.to_string();
+    }
+
+    // cameraState
+    if let Some(cam_json) = extract_json_field(json, "cameraState") {
+        if let Some(d) = extract_float_value(cam_json, "distance") {
+            config.view.distance = d;
+        }
+        if let Some(p) = extract_float_value(cam_json, "phi") {
+            config.view.phi = p;
+        }
+        if let Some(t) = extract_float_value(cam_json, "thetaOffset") {
+            config.view.theta = t;
+        }
+        if let Some(f) = extract_float_value(cam_json, "fovy") {
+            config.view.fovy = f;
+        }
+        if let Some(n) = extract_float_value(cam_json, "near") {
+            config.view.near = n;
+        }
+        if let Some(far) = extract_float_value(cam_json, "far") {
+            config.view.far = far;
+        }
+        if cam_json.contains(r#""perspective":true"#) || cam_json.contains(r#""perspective": true"#) {
+            config.view.perspective = true;
+        } else if cam_json.contains(r#""perspective":false"#) || cam_json.contains(r#""perspective": false"#) {
+            config.view.perspective = false;
+        }
+    }
+
+    // topics
+    if let Some(topics_json) = extract_json_field(json, "topics") {
+        parse_topic_configs(topics_json, &mut config.topics);
+    }
+
+    config
+}
+
+/// Parse per-topic display configs from JSON.
+fn parse_topic_configs(json: &str, topics: &mut std::collections::HashMap<String, TopicDisplayConfig>) {
+    // Find topic keys (e.g. "ConvertedTrace": {...})
+    let mut pos = 0;
+    while pos < json.len() {
+        // Find next key
+        let key_start = match json[pos..].find('"') {
+            Some(p) => pos + p + 1,
+            None => break,
+        };
+        let key_end = match json[key_start..].find('"') {
+            Some(p) => key_start + p,
+            None => break,
+        };
+        let key = &json[key_start..key_end];
+
+        // Find the value (should be an object)
+        let after_key = &json[key_end + 1..];
+        let colon_pos = match after_key.find(':') {
+            Some(p) => p,
+            None => break,
+        };
+        let value_start = after_key[colon_pos + 1..].trim_start();
+        if !value_start.starts_with('{') {
+            pos = key_end + 1 + colon_pos + 1;
+            continue;
+        }
+
+        // Find matching brace for the value object
+        let value_abs_start = json.len() - value_start.len();
+        let mut depth = 0;
+        let mut value_end = 0;
+        for (i, c) in value_start.chars().enumerate() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        value_end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            break;
+        }
+
+        let value_json = &value_start[..=value_end];
+
+        // Parse topic display config
+        let mut tc = TopicDisplayConfig::default();
+        if value_json.contains(r#""visible":false"#) || value_json.contains(r#""visible": false"#) {
+            tc.visible = false;
+        }
+        if value_json.contains(r#""caching":true"#) || value_json.contains(r#""caching": true"#) {
+            tc.caching = true;
+        }
+        if value_json.contains(r#""caching":false"#) || value_json.contains(r#""caching": false"#) {
+            tc.caching = false;
+        }
+        if value_json.contains(r#""showAxes":true"#) || value_json.contains(r#""showAxes": true"#) {
+            tc.show_axes = true;
+        }
+        if value_json.contains(r#""showAxes":false"#) || value_json.contains(r#""showAxes": false"#) {
+            tc.show_axes = false;
+        }
+        if value_json.contains(r#""showPhysicalLanes":true"#) || value_json.contains(r#""showPhysicalLanes": true"#) {
+            tc.show_physical_lanes = true;
+        }
+        if value_json.contains(r#""showPhysicalLanes":false"#) || value_json.contains(r#""showPhysicalLanes": false"#) {
+            tc.show_physical_lanes = false;
+        }
+        if value_json.contains(r#""showLogicalLanes":true"#) || value_json.contains(r#""showLogicalLanes": true"#) {
+            tc.show_logical_lanes = true;
+        }
+        if value_json.contains(r#""showLogicalLanes":false"#) || value_json.contains(r#""showLogicalLanes": false"#) {
+            tc.show_logical_lanes = false;
+        }
+        if value_json.contains(r#""showReferenceLines":true"#) || value_json.contains(r#""showReferenceLines": true"#) {
+            tc.show_reference_lines = true;
+        }
+        if value_json.contains(r#""showReferenceLines":false"#) || value_json.contains(r#""showReferenceLines": false"#) {
+            tc.show_reference_lines = false;
+        }
+        if value_json.contains(r#""showBoundingBox":true"#) || value_json.contains(r#""showBoundingBox": true"#) {
+            tc.show_bounding_box = true;
+        }
+        if value_json.contains(r#""showBoundingBox":false"#) || value_json.contains(r#""showBoundingBox": false"#) {
+            tc.show_bounding_box = false;
+        }
+        if value_json.contains(r#""show3dModels":true"#) || value_json.contains(r#""show3dModels": true"#) {
+            tc.show_3d_models = true;
+        }
+        if value_json.contains(r#""show3dModels":false"#) || value_json.contains(r#""show3dModels": false"#) {
+            tc.show_3d_models = false;
+        }
+
+        topics.insert(key.to_string(), tc);
+        pos = value_abs_start + value_end + 1;
+    }
+}
+
+/// Extract a float value from JSON.
+fn extract_float_value(json: &str, field: &str) -> Option<f64> {
+    let pattern = format!(r#""{}":"#, field);
+    let start = json.find(&pattern)? + pattern.len();
+    let remaining = &json[start..].trim_start();
+    let end = remaining.find(&[',', '}', ' ', '\n'][..]).unwrap_or(remaining.len());
+    remaining[..end].parse::<f64>().ok()
 }
 
 /// Generate a unique name for an imported layout (e.g. "Imported", "Imported 2", etc.)
