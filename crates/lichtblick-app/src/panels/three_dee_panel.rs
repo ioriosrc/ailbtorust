@@ -716,8 +716,7 @@ impl SceneState {
         let line_fs = compile_shader(&gl, GL::FRAGMENT_SHADER, LINE_FRAG_SHADER)?;
         let line_program = link_program(&gl, &line_vs, &line_fs)?;
 
-        // Create one default grid
-        let default_grid = Self::create_grid_buffers(&gl, 10.0, 10, "#248eff33", "Global")?;
+        // No default grid — sync_grids() will create from config if needed
 
         // Create point cloud VAO (initially empty)
         let point_cloud_vao = gl.create_vertex_array().ok_or("Failed to create VAO")?;
@@ -839,7 +838,7 @@ impl SceneState {
         Ok(Self {
             gl,
             grid_program,
-            grids: vec![default_grid],
+            grids: Vec::new(),
             point_cloud_program,
             point_cloud_vao,
             point_cloud_vertex_count: 0,
@@ -1196,8 +1195,9 @@ impl SceneState {
                 gl.uniform_matrix4fv_with_f32_array(sc_vp_loc.as_ref(), false, &vp.data);
                 // Light from upper-right-front
                 gl.uniform3f(sc_light_loc.as_ref(), 0.3, 0.8, 0.5);
-                gl.enable(GL::CULL_FACE);
-                gl.cull_face(GL::BACK);
+                // Disable back-face culling + disable depth write for transparent cubes
+                gl.disable(GL::CULL_FACE);
+                gl.depth_mask(false);
                 gl.bind_vertex_array(Some(&self.solid_cube_vao));
 
                 for cube in cubes.iter() {
@@ -1223,8 +1223,8 @@ impl SceneState {
                     gl.uniform4f(sc_color_loc.as_ref(), cube.r, cube.g, cube.b, cube.a);
                     gl.draw_arrays(GL::TRIANGLES, 0, self.solid_cube_vertex_count);
                 }
-                gl.disable(GL::CULL_FACE);
-                // Restore uc_program for lines/triangles below
+                // Restore depth write and program for lines/triangles below
+                gl.depth_mask(true);
                 gl.use_program(Some(&self.uc_program));
             }
 

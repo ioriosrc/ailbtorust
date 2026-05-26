@@ -7,7 +7,7 @@ use std::rc::Rc;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use lichtblick_core::settings::ColorScheme;
-use lichtblick_panels::three_dee::{ThreeDeeConfig, TopicDisplayConfig, ViewConfig, SceneConfig};
+use lichtblick_panels::three_dee::{ThreeDeeConfig, TopicDisplayConfig, ViewConfig, SceneConfig, CustomLayersConfig};
 
 use crate::player::McapPlayer;
 
@@ -654,6 +654,10 @@ impl LayoutState {
                     default_model_path: "/opt/models/vehicles/".into(),
                 });
                 topics
+            },
+            custom_layers: lichtblick_panels::three_dee::CustomLayersConfig {
+                grids: Vec::new(),
+                urdfs: Vec::new(),
             },
             ..ThreeDeeConfig::default()
         };
