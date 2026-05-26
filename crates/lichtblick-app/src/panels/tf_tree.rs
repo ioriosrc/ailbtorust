@@ -403,6 +403,23 @@ impl TfTree {
         frames
     }
 
+    /// Get the parent frame of a child frame.
+    pub fn get_parent(&self, child: &str) -> Option<String> {
+        self.parents.get(child).cloned()
+    }
+
+    /// Get the number of buffered transforms for a parent→child pair.
+    pub fn get_history_size(&self, parent: &str, child: &str) -> usize {
+        let key = (parent.to_string(), child.to_string());
+        self.buffers.get(&key).map(|b| b.transforms.len()).unwrap_or(0)
+    }
+
+    /// Get the latest timestamp for a parent→child pair.
+    pub fn get_latest_timestamp(&self, parent: &str, child: &str) -> Option<u64> {
+        let key = (parent.to_string(), child.to_string());
+        self.buffers.get(&key).and_then(|b| b.transforms.last().map(|t| t.timestamp_ns))
+    }
+
     /// Clear all transforms.
     pub fn clear(&mut self) {
         self.buffers.clear();

@@ -233,9 +233,10 @@ precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec4 a_color;
 uniform mat4 u_viewProjection;
+uniform mat4 u_modelMatrix;
 out vec4 v_color;
 void main() {
-    gl_Position = u_viewProjection * vec4(a_position, 1.0);
+    gl_Position = u_viewProjection * u_modelMatrix * vec4(a_position, 1.0);
     v_color = a_color;
 }
 "#;
@@ -364,24 +365,29 @@ fn link_program(gl: &GL, vs: &WebGlShader, fs: &WebGlShader) -> Result<WebGlProg
 // ============ Grid + Axes Geometry ============
 
 /// Generate grid lines on the XZ plane with coordinate axes.
-fn generate_grid_and_axes(size: i32, spacing: f32) -> (Vec<f32>, Vec<f32>) {
+fn generate_grid_and_axes(size: i32, spacing: f32, grid_color: [f32; 4]) -> (Vec<f32>, Vec<f32>) {
     let mut positions: Vec<f32> = Vec::new();
     let mut colors: Vec<f32> = Vec::new();
 
     let half = size as f32 * spacing;
 
-    // Grid lines (gray)
+    // Grid lines (use custom color)
+    let cr = grid_color[0];
+    let cg = grid_color[1];
+    let cb = grid_color[2];
+    let ca = grid_color[3];
+
     for i in -size..=size {
         let pos = i as f32 * spacing;
-        let alpha = if i == 0 { 0.0 } else { 0.3 }; // Skip center lines (axes go there)
+        let alpha = if i == 0 { 0.0 } else { ca }; // Skip center lines (axes go there)
 
         // Line along X
         positions.extend_from_slice(&[-half, 0.0, pos, half, 0.0, pos]);
-        colors.extend_from_slice(&[0.5, 0.5, 0.5, alpha, 0.5, 0.5, 0.5, alpha]);
+        colors.extend_from_slice(&[cr, cg, cb, alpha, cr, cg, cb, alpha]);
 
         // Line along Z
         positions.extend_from_slice(&[pos, 0.0, -half, pos, 0.0, half]);
-        colors.extend_from_slice(&[0.5, 0.5, 0.5, alpha, 0.5, 0.5, 0.5, alpha]);
+        colors.extend_from_slice(&[cr, cg, cb, alpha, cr, cg, cb, alpha]);
     }
 
     // X axis (red)
@@ -397,6 +403,27 @@ fn generate_grid_and_axes(size: i32, spacing: f32) -> (Vec<f32>, Vec<f32>) {
     colors.extend_from_slice(&[0.2, 0.2, 1.0, 1.0, 0.2, 0.2, 1.0, 1.0]);
 
     (positions, colors)
+}
+
+/// Parse a hex color string (e.g. "#248eff33" or "#ff0000") into [r, g, b, a] floats.
+fn parse_hex_color(hex: &str) -> [f32; 4] {
+    let h = hex.trim_start_matches('#');
+    match h.len() {
+        6 => {
+            let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(128) as f32 / 255.0;
+            let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(128) as f32 / 255.0;
+            let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(128) as f32 / 255.0;
+            [r, g, b, 1.0]
+        }
+        8 => {
+            let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(128) as f32 / 255.0;
+            let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(128) as f32 / 255.0;
+            let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(128) as f32 / 255.0;
+            let a = u8::from_str_radix(&h[6..8], 16).unwrap_or(255) as f32 / 255.0;
+            [r, g, b, a]
+        }
+        _ => [0.5, 0.5, 0.5, 0.3],
+    }
 }
 
 // ============ Scene Entity Types ============
@@ -497,13 +524,23 @@ fn build_model_matrix(px: f32, py: f32, pz: f32, qx: f32, qy: f32, qz: f32, qw: 
 
 // ============ Scene State ============
 
+/// A single grid layer with its own GPU buffers.
+struct SceneStateGrid {
+    vao: WebGlVertexArrayObject,
+    pos_buffer: WebGlBuffer,
+    col_buffer: WebGlBuffer,
+    vertex_count: i32,
+    size: f64,
+    divisions: u32,
+    color: String,
+    frame_id: String,
+    visible: bool,
+}
+
 struct SceneState {
     gl: GL,
     grid_program: WebGlProgram,
-    grid_vao: WebGlVertexArrayObject,
-    grid_vertex_count: i32,
-    grid_pos_buffer: WebGlBuffer,
-    grid_col_buffer: WebGlBuffer,
+    grids: Vec<SceneStateGrid>,
     point_cloud_program: WebGlProgram,
     point_cloud_vao: WebGlVertexArrayObject,
     point_cloud_vertex_count: i32,
@@ -519,11 +556,11 @@ struct SceneState {
     scene_line_vao: WebGlVertexArrayObject,
     scene_line_buffer: WebGlBuffer,
     display_frame: String,
+    follow_mode: String,
     camera: OrbitCamera,
     canvas_width: u32,
     canvas_height: u32,
     // Config-driven rendering state
-    show_grid: bool,
     bg_color: [f32; 3],
     // Transforms visual config
     tf_axis_scale: f32,
@@ -531,6 +568,15 @@ struct SceneState {
     tf_line_color: [f32; 3],
     // Manual TF offsets (frame_name -> [tx,ty,tz, rx,ry,rz])
     tf_offsets: std::collections::HashMap<String, [f64; 6]>,
+    // Current player time for TF lookups
+    current_time_ns: u64,
+    // Render stats
+    frame_count: u32,
+    last_fps_time: f64,
+    fps: f32,
+    point_count: i32,
+    line_count: i32,
+    enable_stats: bool,
 }
 
 impl SceneState {
@@ -550,35 +596,8 @@ impl SceneState {
         let line_fs = compile_shader(&gl, GL::FRAGMENT_SHADER, LINE_FRAG_SHADER)?;
         let line_program = link_program(&gl, &line_vs, &line_fs)?;
 
-        // Generate grid geometry
-        let (grid_pos, grid_col) = generate_grid_and_axes(20, 1.0);
-        let grid_vertex_count = (grid_pos.len() / 3) as i32;
-
-        // Create grid VAO
-        let grid_vao = gl.create_vertex_array().ok_or("Failed to create VAO")?;
-        gl.bind_vertex_array(Some(&grid_vao));
-
-        // Position buffer
-        let grid_pos_buffer = gl.create_buffer().ok_or("Failed to create buffer")?;
-        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&grid_pos_buffer));
-        unsafe {
-            let array = js_sys::Float32Array::view(&grid_pos);
-            gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
-        }
-        gl.vertex_attrib_pointer_with_i32(0, 3, GL::FLOAT, false, 0, 0);
-        gl.enable_vertex_attrib_array(0);
-
-        // Color buffer
-        let grid_col_buffer = gl.create_buffer().ok_or("Failed to create buffer")?;
-        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&grid_col_buffer));
-        unsafe {
-            let array = js_sys::Float32Array::view(&grid_col);
-            gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
-        }
-        gl.vertex_attrib_pointer_with_i32(1, 4, GL::FLOAT, false, 0, 0);
-        gl.enable_vertex_attrib_array(1);
-
-        gl.bind_vertex_array(None);
+        // Create one default grid
+        let default_grid = Self::create_grid_buffers(&gl, 10.0, 10, "#248eff33", "Global")?;
 
         // Create point cloud VAO (initially empty)
         let point_cloud_vao = gl.create_vertex_array().ok_or("Failed to create VAO")?;
@@ -653,10 +672,7 @@ impl SceneState {
         Ok(Self {
             gl,
             grid_program,
-            grid_vao,
-            grid_vertex_count,
-            grid_pos_buffer,
-            grid_col_buffer,
+            grids: vec![default_grid],
             point_cloud_program,
             point_cloud_vao,
             point_cloud_vertex_count: 0,
@@ -670,45 +686,161 @@ impl SceneState {
             scene_line_vao,
             scene_line_buffer,
             display_frame: String::new(),
+            follow_mode: "pose".into(),
             camera: OrbitCamera::new(),
             canvas_width: width,
             canvas_height: height,
-            show_grid: true,
             bg_color: [0.12, 0.12, 0.14],
             tf_axis_scale: 1.0,
             tf_line_width: 2.0,
             tf_line_color: [1.0, 1.0, 0.0],
             tf_offsets: std::collections::HashMap::new(),
+            current_time_ns: 0,
+            frame_count: 0,
+            last_fps_time: 0.0,
+            fps: 0.0,
+            point_count: 0,
+            line_count: 0,
+            enable_stats: false,
         })
     }
 
-    /// Regenerate grid geometry and re-upload to GPU buffers.
-    fn update_grid(&mut self, size: f64, divisions: u32) {
+    /// Create GPU buffers for a single grid layer.
+    fn create_grid_buffers(gl: &GL, size: f64, divisions: u32, color: &str, frame_id: &str) -> Result<SceneStateGrid, String> {
         let half_size = size as i32;
         let spacing = size as f32 / divisions.max(1) as f32;
-        let (grid_pos, grid_col) = generate_grid_and_axes(half_size, spacing);
-        self.grid_vertex_count = (grid_pos.len() / 3) as i32;
+        let grid_color = parse_hex_color(color);
+        let (grid_pos, grid_col) = generate_grid_and_axes(half_size, spacing, grid_color);
+        let vertex_count = (grid_pos.len() / 3) as i32;
 
-        let gl = &self.gl;
-        gl.bind_vertex_array(Some(&self.grid_vao));
+        let vao = gl.create_vertex_array().ok_or("Failed to create grid VAO")?;
+        gl.bind_vertex_array(Some(&vao));
 
-        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&self.grid_pos_buffer));
+        let pos_buffer = gl.create_buffer().ok_or("Failed to create grid pos buffer")?;
+        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&pos_buffer));
         unsafe {
             let array = js_sys::Float32Array::view(&grid_pos);
             gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
         }
+        gl.vertex_attrib_pointer_with_i32(0, 3, GL::FLOAT, false, 0, 0);
+        gl.enable_vertex_attrib_array(0);
 
-        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&self.grid_col_buffer));
+        let col_buffer = gl.create_buffer().ok_or("Failed to create grid col buffer")?;
+        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&col_buffer));
         unsafe {
             let array = js_sys::Float32Array::view(&grid_col);
             gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
         }
+        gl.vertex_attrib_pointer_with_i32(1, 4, GL::FLOAT, false, 0, 0);
+        gl.enable_vertex_attrib_array(1);
 
         gl.bind_vertex_array(None);
+
+        Ok(SceneStateGrid {
+            vao,
+            pos_buffer,
+            col_buffer,
+            vertex_count,
+            size,
+            divisions,
+            color: color.to_string(),
+            frame_id: frame_id.to_string(),
+            visible: true,
+        })
     }
 
-    fn render(&self) {
+    /// Synchronize the grids vector with config. Recreate buffers as needed.
+    fn sync_grids(&mut self, config_grids: &[lichtblick_panels::three_dee::GridLayer]) {
         let gl = &self.gl;
+        // Resize grids vector to match config
+        while self.grids.len() > config_grids.len() {
+            let g = self.grids.pop().unwrap();
+            gl.delete_vertex_array(Some(&g.vao));
+            gl.delete_buffer(Some(&g.pos_buffer));
+            gl.delete_buffer(Some(&g.col_buffer));
+        }
+        for (i, cfg_grid) in config_grids.iter().enumerate() {
+            if i < self.grids.len() {
+                // Update existing grid
+                let g = &mut self.grids[i];
+                g.visible = cfg_grid.visible;
+                g.frame_id = cfg_grid.frame_id.clone();
+                // Rebuild geometry if size/divisions/color changed
+                if g.size != cfg_grid.size || g.divisions != cfg_grid.divisions || g.color != cfg_grid.color {
+                    g.size = cfg_grid.size;
+                    g.divisions = cfg_grid.divisions;
+                    g.color = cfg_grid.color.clone();
+                    let half_size = cfg_grid.size as i32;
+                    let spacing = cfg_grid.size as f32 / cfg_grid.divisions.max(1) as f32;
+                    let grid_color = parse_hex_color(&cfg_grid.color);
+                    let (grid_pos, grid_col) = generate_grid_and_axes(half_size, spacing, grid_color);
+                    g.vertex_count = (grid_pos.len() / 3) as i32;
+
+                    gl.bind_vertex_array(Some(&g.vao));
+                    gl.bind_buffer(GL::ARRAY_BUFFER, Some(&g.pos_buffer));
+                    unsafe {
+                        let array = js_sys::Float32Array::view(&grid_pos);
+                        gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
+                    }
+                    gl.bind_buffer(GL::ARRAY_BUFFER, Some(&g.col_buffer));
+                    unsafe {
+                        let array = js_sys::Float32Array::view(&grid_col);
+                        gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
+                    }
+                    gl.bind_vertex_array(None);
+                }
+            } else {
+                // Create new grid
+                if let Ok(new_grid) = Self::create_grid_buffers(gl, cfg_grid.size, cfg_grid.divisions, &cfg_grid.color, &cfg_grid.frame_id) {
+                    let mut ng = new_grid;
+                    ng.visible = cfg_grid.visible;
+                    self.grids.push(ng);
+                }
+            }
+        }
+    }
+
+    /// Regenerate grid geometry and re-upload to GPU buffers (legacy single grid).
+    fn update_grid(&mut self, size: f64, divisions: u32) {
+        if let Some(g) = self.grids.first_mut() {
+            let half_size = size as i32;
+            let spacing = size as f32 / divisions.max(1) as f32;
+            let grid_color = parse_hex_color(&g.color);
+            let (grid_pos, grid_col) = generate_grid_and_axes(half_size, spacing, grid_color);
+            g.vertex_count = (grid_pos.len() / 3) as i32;
+            g.size = size;
+            g.divisions = divisions;
+
+            let gl = &self.gl;
+            gl.bind_vertex_array(Some(&g.vao));
+
+            gl.bind_buffer(GL::ARRAY_BUFFER, Some(&g.pos_buffer));
+            unsafe {
+                let array = js_sys::Float32Array::view(&grid_pos);
+                gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
+            }
+
+            gl.bind_buffer(GL::ARRAY_BUFFER, Some(&g.col_buffer));
+            unsafe {
+                let array = js_sys::Float32Array::view(&grid_col);
+                gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
+            }
+
+            gl.bind_vertex_array(None);
+        }
+    }
+
+    fn render(&mut self) {
+        let gl = &self.gl;
+
+        // FPS tracking
+        let now = js_sys::Date::now(); // ms
+        self.frame_count += 1;
+        if now - self.last_fps_time >= 1000.0 {
+            self.fps = self.frame_count as f32 / ((now - self.last_fps_time) as f32 / 1000.0);
+            self.frame_count = 0;
+            self.last_fps_time = now;
+        }
 
         gl.viewport(0, 0, self.canvas_width as i32, self.canvas_height as i32);
         gl.clear_color(self.bg_color[0], self.bg_color[1], self.bg_color[2], 1.0);
@@ -718,18 +850,68 @@ impl SceneState {
         gl.blend_func(GL::SRC_ALPHA, GL::ONE_MINUS_SRC_ALPHA);
 
         let aspect = self.canvas_width as f32 / self.canvas_height.max(1) as f32;
+
+        // === Follow Mode: adjust camera based on display frame ===
+        let current_time_ns = self.current_time_ns;
+        let follow_mode = self.follow_mode.clone();
+        let display_frame = self.display_frame.clone();
+
+        if !display_frame.is_empty() && follow_mode != "fixed" {
+            TF_STATE.with(|tree| {
+                let tf = tree.borrow();
+                // Look up display frame relative to root (get its world pose)
+                if let Some(root_frames) = tf.frames().first().cloned() {
+                    if let Some(transform) = tf.lookup(&root_frames, &display_frame, current_time_ns) {
+                        let tx = transform.translation.x as f32;
+                        let ty = transform.translation.y as f32;
+                        let tz = transform.translation.z as f32;
+
+                        if follow_mode == "pose" {
+                            // Follow both position and orientation
+                            self.camera.target = Vec3::new(tx, ty, tz);
+                            // Extract yaw from quaternion and adjust azimuth
+                            let q = &transform.rotation;
+                            let yaw = (2.0 * (q.w * q.z + q.x * q.y))
+                                .atan2(1.0 - 2.0 * (q.y * q.y + q.z * q.z)) as f32;
+                            self.camera.azimuth = std::f32::consts::FRAC_PI_4 - yaw;
+                        } else if follow_mode == "position" {
+                            // Follow position only, keep user orientation
+                            self.camera.target = Vec3::new(tx, ty, tz);
+                        }
+                    }
+                }
+            });
+        }
+
         let view = self.camera.view_matrix();
         let proj = self.camera.projection_matrix(aspect);
         let vp = proj.multiply(&view);
 
-        // Draw grid (if enabled)
-        if self.show_grid {
-            gl.use_program(Some(&self.grid_program));
-            let vp_loc = gl.get_uniform_location(&self.grid_program, "u_viewProjection");
-            gl.uniform_matrix4fv_with_f32_array(vp_loc.as_ref(), false, &vp.data);
+        // Draw grids (each in its own frame)
+        let mut total_lines = 0i32;
+        gl.use_program(Some(&self.grid_program));
+        let grid_vp_loc = gl.get_uniform_location(&self.grid_program, "u_viewProjection");
+        let grid_model_loc = gl.get_uniform_location(&self.grid_program, "u_modelMatrix");
+        gl.uniform_matrix4fv_with_f32_array(grid_vp_loc.as_ref(), false, &vp.data);
 
-            gl.bind_vertex_array(Some(&self.grid_vao));
-            gl.draw_arrays(GL::LINES, 0, self.grid_vertex_count);
+        for grid in &self.grids {
+            if !grid.visible {
+                continue;
+            }
+            // Compute model matrix: TF lookup for grid's frame_id
+            let model_matrix = if !display_frame.is_empty() && !grid.frame_id.is_empty() && grid.frame_id != display_frame {
+                TF_STATE.with(|tree| {
+                    tree.borrow().lookup(&display_frame, &grid.frame_id, current_time_ns)
+                        .map(|t| t.to_mat4_f32())
+                }).unwrap_or_else(|| Mat4::identity().data)
+            } else {
+                Mat4::identity().data
+            };
+            gl.uniform_matrix4fv_with_f32_array(grid_model_loc.as_ref(), false, &model_matrix);
+
+            gl.bind_vertex_array(Some(&grid.vao));
+            gl.draw_arrays(GL::LINES, 0, grid.vertex_count);
+            total_lines += grid.vertex_count / 2;
         }
 
         // Draw point cloud if any
@@ -757,10 +939,11 @@ impl SceneState {
             let display_frame = self.display_frame.clone();
             let axis_scale = self.tf_axis_scale;
             let offsets = &self.tf_offsets;
+            let time_ns = self.current_time_ns;
             TF_STATE.with(|tree| {
                 let tf = tree.borrow();
                 for frame in tf.frames() {
-                    if let Some(transform) = tf.lookup(&display_frame, &frame, 0) {
+                    if let Some(transform) = tf.lookup(&display_frame, &frame, time_ns) {
                         let mut matrix = transform.to_mat4_f32();
 
                         // Apply manual offset if configured
@@ -791,6 +974,7 @@ impl SceneState {
 
         // Draw scene entities (cubes and lines from SceneUpdate)
         let display_frame = self.display_frame.clone();
+        let time_ns = self.current_time_ns;
         SCENE_ENTITIES.with(|entities| {
             let ent = entities.borrow();
             let (cubes, lines) = &*ent;
@@ -814,7 +998,7 @@ impl SceneState {
                     // Get TF from display_frame to entity's frame_id
                     let frame_tf = if !display_frame.is_empty() && !cube.frame_id.is_empty() {
                         TF_STATE.with(|tree| {
-                            tree.borrow().lookup(&display_frame, &cube.frame_id, 0)
+                            tree.borrow().lookup(&display_frame, &cube.frame_id, time_ns)
                                 .map(|t| t.to_mat4_f32())
                         })
                     } else {
@@ -849,7 +1033,7 @@ impl SceneState {
                     // Get TF from display_frame to entity's frame_id
                     let frame_tf = if !display_frame.is_empty() && !line.frame_id.is_empty() {
                         TF_STATE.with(|tree| {
-                            tree.borrow().lookup(&display_frame, &line.frame_id, 0)
+                            tree.borrow().lookup(&display_frame, &line.frame_id, time_ns)
                                 .map(|t| t.to_mat4_f32())
                         })
                     } else {
@@ -879,9 +1063,12 @@ impl SceneState {
                         _ => GL::LINE_STRIP,
                     };
                     gl.draw_arrays(draw_mode, 0, vertex_count);
+                    total_lines += vertex_count / 2;
                 }
             }
         });
+
+        self.line_count = total_lines;
 
         gl.bind_vertex_array(None);
     }
@@ -907,6 +1094,141 @@ impl SceneState {
     fn set_display_frame(&mut self, frame: String) {
         self.display_frame = frame;
     }
+
+    /// Raycast from screen coordinates to the Y=0 ground plane.
+    /// Returns (x, z) world coordinates of the intersection point.
+    fn raycast_to_ground(&self, screen_x: f32, screen_y: f32) -> Option<(f32, f32, f32)> {
+        let aspect = self.canvas_width as f32 / self.canvas_height.max(1) as f32;
+        let view = self.camera.view_matrix();
+        let proj = self.camera.projection_matrix(aspect);
+        let vp = proj.multiply(&view);
+
+        // Invert the VP matrix (simplified - use manual 4x4 inverse)
+        let inv_vp = invert_mat4(&vp)?;
+
+        // Convert screen coords to NDC (-1..1)
+        let ndc_x = (2.0 * screen_x / self.canvas_width as f32) - 1.0;
+        let ndc_y = 1.0 - (2.0 * screen_y / self.canvas_height as f32);
+
+        // Near and far points in NDC
+        let near_ndc = [ndc_x, ndc_y, -1.0, 1.0];
+        let far_ndc = [ndc_x, ndc_y, 1.0, 1.0];
+
+        // Transform to world space
+        let near_world = mat4_mul_vec4(&inv_vp, &near_ndc);
+        let far_world = mat4_mul_vec4(&inv_vp, &far_ndc);
+
+        if near_world[3].abs() < 1e-10 || far_world[3].abs() < 1e-10 {
+            return None;
+        }
+
+        let origin = Vec3::new(
+            near_world[0] / near_world[3],
+            near_world[1] / near_world[3],
+            near_world[2] / near_world[3],
+        );
+        let far_pt = Vec3::new(
+            far_world[0] / far_world[3],
+            far_world[1] / far_world[3],
+            far_world[2] / far_world[3],
+        );
+
+        let dir = far_pt.sub(&origin);
+
+        // Intersect with Y=0 plane
+        if dir.y.abs() < 1e-10 {
+            return None; // Ray parallel to ground
+        }
+
+        let t = -origin.y / dir.y;
+        if t < 0.0 {
+            return None; // Behind camera
+        }
+
+        let x = origin.x + dir.x * t;
+        let y = 0.0;
+        let z = origin.z + dir.z * t;
+
+        Some((x, y, z))
+    }
+}
+
+/// Invert a 4x4 matrix. Returns None if singular.
+fn invert_mat4(m: &Mat4) -> Option<Mat4> {
+    let d = &m.data;
+    let mut inv = [0.0f32; 16];
+
+    inv[0] = d[5]*d[10]*d[15] - d[5]*d[11]*d[14] - d[9]*d[6]*d[15] + d[9]*d[7]*d[14] + d[13]*d[6]*d[11] - d[13]*d[7]*d[10];
+    inv[4] = -d[4]*d[10]*d[15] + d[4]*d[11]*d[14] + d[8]*d[6]*d[15] - d[8]*d[7]*d[14] - d[12]*d[6]*d[11] + d[12]*d[7]*d[10];
+    inv[8] = d[4]*d[9]*d[15] - d[4]*d[11]*d[13] - d[8]*d[5]*d[15] + d[8]*d[7]*d[13] + d[12]*d[5]*d[11] - d[12]*d[7]*d[9];
+    inv[12] = -d[4]*d[9]*d[14] + d[4]*d[10]*d[13] + d[8]*d[5]*d[14] - d[8]*d[6]*d[13] - d[12]*d[5]*d[10] + d[12]*d[6]*d[9];
+    inv[1] = -d[1]*d[10]*d[15] + d[1]*d[11]*d[14] + d[9]*d[2]*d[15] - d[9]*d[3]*d[14] - d[13]*d[2]*d[11] + d[13]*d[3]*d[10];
+    inv[5] = d[0]*d[10]*d[15] - d[0]*d[11]*d[14] - d[8]*d[2]*d[15] + d[8]*d[3]*d[14] + d[12]*d[2]*d[11] - d[12]*d[3]*d[10];
+    inv[9] = -d[0]*d[9]*d[15] + d[0]*d[11]*d[13] + d[8]*d[1]*d[15] - d[8]*d[3]*d[13] - d[12]*d[1]*d[11] + d[12]*d[3]*d[9];
+    inv[13] = d[0]*d[9]*d[14] - d[0]*d[10]*d[13] - d[8]*d[1]*d[14] + d[8]*d[2]*d[13] + d[12]*d[1]*d[10] - d[12]*d[2]*d[9];
+    inv[2] = d[1]*d[6]*d[15] - d[1]*d[7]*d[14] - d[5]*d[2]*d[15] + d[5]*d[3]*d[14] + d[13]*d[2]*d[7] - d[13]*d[3]*d[6];
+    inv[6] = -d[0]*d[6]*d[15] + d[0]*d[7]*d[14] + d[4]*d[2]*d[15] - d[4]*d[3]*d[14] - d[12]*d[2]*d[7] + d[12]*d[3]*d[6];
+    inv[10] = d[0]*d[5]*d[15] - d[0]*d[7]*d[13] - d[4]*d[1]*d[15] + d[4]*d[3]*d[13] + d[12]*d[1]*d[7] - d[12]*d[3]*d[5];
+    inv[14] = -d[0]*d[5]*d[14] + d[0]*d[6]*d[13] + d[4]*d[1]*d[14] - d[4]*d[2]*d[13] - d[12]*d[1]*d[6] + d[12]*d[2]*d[5];
+    inv[3] = -d[1]*d[6]*d[11] + d[1]*d[7]*d[10] + d[5]*d[2]*d[11] - d[5]*d[3]*d[10] - d[9]*d[2]*d[7] + d[9]*d[3]*d[6];
+    inv[7] = d[0]*d[6]*d[11] - d[0]*d[7]*d[10] - d[4]*d[2]*d[11] + d[4]*d[3]*d[10] + d[8]*d[2]*d[7] - d[8]*d[3]*d[6];
+    inv[11] = -d[0]*d[5]*d[11] + d[0]*d[7]*d[9] + d[4]*d[1]*d[11] - d[4]*d[3]*d[9] - d[8]*d[1]*d[7] + d[8]*d[3]*d[5];
+    inv[15] = d[0]*d[5]*d[10] - d[0]*d[6]*d[9] - d[4]*d[1]*d[10] + d[4]*d[2]*d[9] + d[8]*d[1]*d[6] - d[8]*d[2]*d[5];
+
+    let det = d[0]*inv[0] + d[1]*inv[4] + d[2]*inv[8] + d[3]*inv[12];
+    if det.abs() < 1e-10 {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    for val in inv.iter_mut() {
+        *val *= inv_det;
+    }
+    Some(Mat4 { data: inv })
+}
+
+/// Multiply a 4x4 matrix by a 4-element vector.
+fn mat4_mul_vec4(m: &Mat4, v: &[f32; 4]) -> [f32; 4] {
+    let d = &m.data;
+    [
+        d[0]*v[0] + d[4]*v[1] + d[8]*v[2] + d[12]*v[3],
+        d[1]*v[0] + d[5]*v[1] + d[9]*v[2] + d[13]*v[3],
+        d[2]*v[0] + d[6]*v[1] + d[10]*v[2] + d[14]*v[3],
+        d[3]*v[0] + d[7]*v[1] + d[11]*v[2] + d[15]*v[3],
+    ]
+}
+
+// ============ Public TF frame metadata helper ============
+
+/// Format a nanosecond duration into a human-readable short string.
+pub fn format_short_duration(duration_ns: u64) -> String {
+    if duration_ns < 1_000 {
+        format!("{} ns", duration_ns)
+    } else if duration_ns < 1_000_000 {
+        format!("{:.1} µs", duration_ns as f64 / 1_000.0)
+    } else if duration_ns < 1_000_000_000 {
+        format!("{:.1} ms", duration_ns as f64 / 1_000_000.0)
+    } else {
+        format!("{:.1} s", duration_ns as f64 / 1_000_000_000.0)
+    }
+}
+
+/// Get metadata for a TF frame: (parent_name, history_size, age_string).
+pub fn get_tf_frame_metadata(frame_name: &str, current_time_ns: u64) -> Option<(String, usize, String)> {
+    TF_STATE.with(|tf| {
+        let tree = tf.borrow();
+        let parent = tree.get_parent(frame_name)?;
+        let history_size = tree.get_history_size(&parent, frame_name);
+        let age_str = if let Some(latest_ns) = tree.get_latest_timestamp(&parent, frame_name) {
+            if current_time_ns > latest_ns {
+                format_short_duration(current_time_ns - latest_ns)
+            } else {
+                "0 ns".to_string()
+            }
+        } else {
+            "unknown".to_string()
+        };
+        Some((parent, history_size, age_str))
+    })
 }
 
 // ============ PointCloud2 Decoder ============
@@ -1430,6 +1752,8 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
     let layout = use_layout_state();
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let point_count = RwSignal::new(0i32);
+    let fps_signal = RwSignal::new(0.0f32);
+    let line_count_signal = RwSignal::new(0i32);
 
     // Timestamp cache: skip re-processing messages that haven't changed
     let last_processed_times = RwSignal::new(std::collections::HashMap::<String, u64>::new());
@@ -1459,7 +1783,7 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             .unwrap();
 
         match SceneState::new(gl, w, h) {
-            Ok(s) => {
+            Ok(mut s) => {
                 s.render();
                 set_scene(s);
             }
@@ -1480,6 +1804,31 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
     let on_mousedown = move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
         *last_mouse_down.borrow_mut() = (ev.client_x(), ev.client_y());
+
+        // Click-to-Publish: Shift + Left Click → raycast to ground
+        if ev.button() == 0 && ev.shift_key() {
+            // Get canvas-relative position
+            if let Some(target) = ev.target() {
+                if let Ok(canvas) = target.dyn_into::<web_sys::HtmlCanvasElement>() {
+                    let rect = canvas.get_bounding_client_rect();
+                    let cx = (ev.client_x() as f64 - rect.left()) as f32;
+                    let cy = (ev.client_y() as f64 - rect.top()) as f32;
+
+                    let hit = with_scene(|s| s.raycast_to_ground(cx, cy));
+                    if let Some(Some((x, _y, z))) = hit {
+                        let cfg = layout.get_three_dee_config(node_id);
+                        let topic = &cfg.publish.topic;
+                        let msg = format!(
+                            "[Click-to-Publish] type={}, topic={}, point=({:.3}, 0.0, {:.3})",
+                            cfg.publish.publish_type, topic, x, z
+                        );
+                        web_sys::console::log_1(&msg.into());
+                    }
+                }
+            }
+            return;
+        }
+
         if ev.button() == 0 {
             *is_rotating_down.borrow_mut() = true;
         } else if ev.button() == 1 || ev.button() == 2 {
@@ -1553,31 +1902,21 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
                     s.bg_color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
                 }
             }
-            // Grid visibility from first custom layer grid
-            let grid_cfg = cfg.custom_layers.grids.first();
-            s.show_grid = grid_cfg.map(|g| g.visible).unwrap_or(true);
 
-            // Dynamic grid: regenerate if size/divisions changed
-            if let Some(g) = grid_cfg {
-                let expected_count = {
-                    let half = g.size as i32;
-                    let divs = g.divisions.max(1);
-                    let spacing = g.size as f32 / divs as f32;
-                    let lines_per_axis = (2 * half + 1) * 2; // each line = 2 verts
-                    let grid_lines = lines_per_axis * 2; // X and Z
-                    let axes_lines = 6; // 3 axes * 2 verts
-                    (grid_lines + axes_lines) as i32
-                };
-                if s.grid_vertex_count != expected_count {
-                    s.update_grid(g.size, g.divisions);
-                }
-            }
+            // Sync all grids from config
+            s.sync_grids(&cfg.custom_layers.grids);
 
             // Camera settings
             s.camera.perspective = cfg.view.perspective;
             s.camera.fov_y = (cfg.view.fovy as f32).to_radians();
             s.camera.near = cfg.view.near as f32;
             s.camera.far = cfg.view.far as f32;
+
+            // Follow mode
+            s.follow_mode = cfg.follow_mode.clone();
+
+            // Render stats
+            s.enable_stats = cfg.scene.enable_stats;
 
             // Transforms visual config
             s.tf_axis_scale = cfg.transforms.axis_scale as f32;
@@ -1607,6 +1946,12 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
         let Some(player) = get_player() else {
             return;
         };
+
+        // Update current time for TF lookups
+        let current_time_ns = player.current_time_ns();
+        with_scene_mut(|s| {
+            s.current_time_ns = current_time_ns;
+        });
 
         let topics = player.topics();
 
@@ -1806,25 +2151,37 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
                         let count = (positions.len() / 3) as i32;
                         with_scene_mut(|s| {
                             s.update_point_cloud(&positions, &colors);
+                            s.point_count = count;
                             s.render();
                         });
-                        point_count.set(count);
                     }
                 } else {
                     // Same message, just re-render scene (camera may have moved)
-                    with_scene(|s| s.render());
+                    with_scene_mut(|s| s.render());
                 }
             }
         } else {
             // No point cloud - just render the grid
-            with_scene(|s| s.render());
+            with_scene_mut(|s| s.render());
         }
+
+        // Update stats signals from scene
+        with_scene(|s| {
+            point_count.set(s.point_count);
+            fps_signal.set(s.fps);
+            line_count_signal.set(s.line_count);
+        });
     });
+
+    // Stats visibility from config
+    let show_stats = move || {
+        layout.get_three_dee_config(node_id).scene.enable_stats
+    };
 
     let on_mouseup_clone = on_mouseup.clone();
 
     view! {
-        <div class="panel-3d-canvas-container">
+        <div class="panel-3d-canvas-container" style="position:relative;">
             <canvas
                 node_ref=canvas_ref
                 class="panel-3d-canvas"
@@ -1835,6 +2192,19 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
                 on:wheel=on_wheel
                 on:contextmenu=move |ev: leptos::ev::MouseEvent| ev.prevent_default()
             />
+            {move || {
+                if show_stats() {
+                    Some(view! {
+                        <div class="render-stats-overlay" style="position:absolute; top:4px; left:4px; background:rgba(0,0,0,0.7); color:#0f0; font-family:monospace; font-size:11px; padding:4px 8px; border-radius:4px; pointer-events:none; z-index:10;">
+                            <div>{move || format!("FPS: {:.0}", fps_signal.get())}</div>
+                            <div>{move || format!("Points: {}", point_count.get())}</div>
+                            <div>{move || format!("Lines: {}", line_count_signal.get())}</div>
+                        </div>
+                    })
+                } else {
+                    None
+                }
+            }}
         </div>
     }
 }

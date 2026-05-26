@@ -13,6 +13,7 @@ use crate::state::app_state::{
     parse_layout_node_internal,
 };
 use lichtblick_panels::three_dee::TopicDisplayConfig;
+use crate::panels::three_dee_panel::get_tf_frame_metadata;
 
 /// Sidebar component (left or right) with drag-resizable width.
 #[component]
@@ -947,10 +948,25 @@ fn PanelSettingsView(node_id: NodeId, node: LayoutNode) -> impl IntoView {
         panel_menu_open.update(|v| *v = !*v);
     };
 
-    let on_reset = move |_: leptos::ev::MouseEvent| {
-        layout.reset_image_config(node_id);
-        panel_menu_open.set(false);
+    let on_reset = {
+        let pt = panel_type.clone();
+        move |_: leptos::ev::MouseEvent| {
+            match pt {
+                PanelType::ThreeDee => layout.reset_three_dee_config(node_id),
+                PanelType::Image => layout.reset_image_config(node_id),
+                _ => {}
+            }
+            panel_menu_open.set(false);
+        }
     };
+
+    let on_import_export_header = move |_: leptos::ev::MouseEvent| {
+        // TODO: implement import/export dialog
+        panel_menu_open.set(false);
+        web_sys::console::log_1(&"Import/export settings not yet implemented".into());
+    };
+
+    let is_three_dee = panel_type == PanelType::ThreeDee;
 
     view! {
         <div class="panel-settings">
@@ -960,8 +976,17 @@ fn PanelSettingsView(node_id: NodeId, node: LayoutNode) -> impl IntoView {
                     <div class="panel-settings-menu-wrapper">
                         <button class="panel-settings-menu-btn" on:click=on_panel_menu title="Options">{"⋮"}</button>
                         <div class="panel-settings-dropdown" class:open=move || panel_menu_open.get()>
+                            {if is_three_dee {
+                                Some(view! {
+                                    <div class="panel-menu-item" on:mousedown=on_import_export_header>
+                                        <span>{"Import/export settings..."}</span>
+                                    </div>
+                                })
+                            } else {
+                                None
+                            }}
                             <div class="panel-menu-item" on:mousedown=on_reset>
-                                <span>{"Reset"}</span>
+                                <span>{"Reset to defaults"}</span>
                             </div>
                         </div>
                     </div>
@@ -1382,6 +1407,11 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
     let state = use_app_state();
     let layout = use_layout_state();
 
+    // Search filter
+    let search_filter = RwSignal::new(String::new());
+    // Topic filter: "all", "visible", "invisible"
+    let topic_filter = RwSignal::new("all".to_string());
+
     // Section collapsed states
     let frame_open = RwSignal::new(true);
     let scene_open = RwSignal::new(false);
@@ -1397,6 +1427,24 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
     let frames = move || state.tf_frames.get();
     let current_display_frame = move || state.display_frame.get();
     let current_follow_mode = move || state.follow_mode.get();
+
+    // --- Header handlers ---
+    let on_title_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                let val = input.value();
+                layout.update_three_dee_config(node_id, |c| c.title = val);
+            }
+        }
+    };
+
+    let on_search_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                search_filter.set(input.value().to_lowercase());
+            }
+        }
+    };
 
     // --- Frame handlers ---
     let on_display_frame_change = move |ev: leptos::ev::Event| {
@@ -1573,9 +1621,49 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
         }).unwrap_or_default()
     };
 
+    // Helper: returns "display:none" when search filter doesn't match section keywords
+    let section_style = move |section_keywords: &'static [&'static str]| {
+        move || {
+            let filter = search_filter.get();
+            if filter.is_empty() {
+                return String::new();
+            }
+            let matches = section_keywords.iter().any(|kw| kw.contains(filter.as_str()));
+            if matches { String::new() } else { "display:none;".to_string() }
+        }
+    };
+
+    let frame_style = section_style(&["frame", "display frame", "follow mode", "follow"]);
+    let scene_style = section_style(&["scene", "background", "label scale", "render stats", "collada", "mesh up axis"]);
+    let view_style = section_style(&["view", "perspective", "distance", "fov", "near clip", "far clip", "sync camera"]);
+    let transforms_style = section_style(&["transforms", "transform", "show labels", "axis scale", "line width", "line color", "editable", "preloading"]);
+    let topics_style = section_style(&["topics", "topic", "visible", "color", "outlines", "caching", "axes", "lanes", "bounding box", "3d models"]);
+    let custom_layers_style = section_style(&["custom layers", "grid", "urdf", "layers"]);
+    let publish_style = section_style(&["publish", "publish type", "topic"]);
+
     view! {
+        // === SETTINGS HEADER (search, title) ===
+        <div class="settings-section" style="padding: 8px 12px;">
+            // Search field
+            <div style="display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+                <span style="font-size:14px; color:var(--text-secondary);">{"🔍"}</span>
+                <input type="text" class="settings-select" style="flex:1; font-size:12px;"
+                    placeholder="Search panel settings..."
+                    on:input=on_search_change
+                />
+            </div>
+            // Title field
+            <div class="settings-row">
+                <label class="settings-label">{"Title"}</label>
+                <input type="text" class="settings-select" style="flex:1;"
+                    value=move || config().title
+                    on:input=on_title_change
+                />
+            </div>
+        </div>
+
         // === FRAME ===
-        <div class="settings-section">
+        <div class="settings-section" style=frame_style>
             <div class="settings-section-header">
                 <h4 class="settings-section-title" on:click=move |_| frame_open.update(|v| *v = !*v)>
                     {move || if frame_open.get() { "▼ Frame" } else { "▶ Frame" }}
@@ -1612,7 +1700,7 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
         </div>
 
         // === SCENE ===
-        <div class="settings-section">
+        <div class="settings-section" style=scene_style>
             <div class="settings-section-header">
                 <h4 class="settings-section-title" on:click=move |_| scene_open.update(|v| *v = !*v)>
                     {move || if scene_open.get() { "▼ Scene" } else { "▶ Scene" }}
@@ -1622,7 +1710,7 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
                 <div class="settings-row">
                     <label class="settings-label">{"Background"}</label>
                     <input type="color" class="settings-color-input"
-                        value=move || config().scene.background_color
+                        prop:value=move || config().scene.background_color
                         on:input=on_bg_color_change
                     />
                 </div>
@@ -1663,7 +1751,7 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
         </div>
 
         // === VIEW ===
-        <div class="settings-section">
+        <div class="settings-section" style=view_style>
             <div class="settings-section-header">
                 <h4 class="settings-section-title" on:click=move |_| view_open.update(|v| *v = !*v)>
                     {move || if view_open.get() { "▼ View" } else { "▶ View" }}
@@ -1724,7 +1812,7 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
         </div>
 
         // === TRANSFORMS ===
-        <div class="settings-section">
+        <div class="settings-section" style=transforms_style>
             <div class="settings-section-header">
                 <h4 class="settings-section-title" on:click=move |_| transforms_open.update(|v| *v = !*v)>
                     {move || if transforms_open.get() { "▼ Transforms" } else { "▶ Transforms" }}
@@ -1759,7 +1847,7 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
                 <div class="settings-row">
                     <label class="settings-label">{"Line color"}</label>
                     <input type="color" class="settings-color-input"
-                        value=move || config().transforms.line_color
+                        prop:value=move || config().transforms.line_color
                         on:input=on_line_color_change
                     />
                 </div>
@@ -1781,14 +1869,19 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
                             on:click=move |_| on_preloading_change(true)>{"On"}</button>
                     </div>
                 </div>
-                // Per-frame offset editors (only when editable)
+                // Frame list: always visible with metadata; offsets only when editable
                 {move || {
+                    let _tick = state.frame_tick.get(); // re-render on tick for age updates
                     let cfg_val = config();
-                    if !cfg_val.transforms.editable {
-                        return vec![];
-                    }
+                    let is_editable = cfg_val.transforms.editable;
                     let tf_list = frames();
+                    let current_time = get_player().map(|p| p.current_time_ns()).unwrap_or(0);
+
                     tf_list.into_iter().map(|frame_name| {
+                        // Get metadata (parent, history, age)
+                        let meta = get_tf_frame_metadata(&frame_name, current_time);
+                        let (parent_str, history_size, age_str) = meta.unwrap_or_else(|| ("(root)".to_string(), 0, "—".to_string()));
+
                         let offset = cfg_val.transforms.offsets.get(&frame_name).cloned()
                             .unwrap_or_default();
                         let fn1 = frame_name.clone();
@@ -1805,133 +1898,142 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
                         let rz = offset.rotation[2].to_degrees();
                         view! {
                             <div style="padding: 4px 0; border-top: 1px solid var(--border-color);">
-                                <div style="font-size:11px; color:var(--text-primary); margin-bottom:4px; font-weight:500;">
+                                <div style="font-size:11px; color:var(--text-primary); margin-bottom:2px; font-weight:500;">
                                     {frame_name.clone()}
                                 </div>
-                                <div class="settings-row">
-                                    <label class="settings-label" style="min-width:20px;">{"X"}</label>
-                                    <input type="number" class="settings-number-input" step="0.1"
-                                        value=format!("{:.2}", tx)
-                                        on:change={
-                                            let f = fn1.clone();
-                                            move |ev: leptos::ev::Event| {
-                                                if let Some(t) = ev.target() {
-                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                        if let Ok(v) = inp.value().parse::<f64>() {
-                                                            let f = f.clone();
-                                                            layout.update_three_dee_config(node_id, move |c| {
-                                                                let o = c.transforms.offsets.entry(f).or_default();
-                                                                o.translation[0] = v;
-                                                            });
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    />
-                                    <label class="settings-label" style="min-width:20px;">{"Y"}</label>
-                                    <input type="number" class="settings-number-input" step="0.1"
-                                        value=format!("{:.2}", ty)
-                                        on:change={
-                                            let f = fn2.clone();
-                                            move |ev: leptos::ev::Event| {
-                                                if let Some(t) = ev.target() {
-                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                        if let Ok(v) = inp.value().parse::<f64>() {
-                                                            let f = f.clone();
-                                                            layout.update_three_dee_config(node_id, move |c| {
-                                                                let o = c.transforms.offsets.entry(f).or_default();
-                                                                o.translation[1] = v;
-                                                            });
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    />
-                                    <label class="settings-label" style="min-width:20px;">{"Z"}</label>
-                                    <input type="number" class="settings-number-input" step="0.1"
-                                        value=format!("{:.2}", tz)
-                                        on:change={
-                                            let f = fn3.clone();
-                                            move |ev: leptos::ev::Event| {
-                                                if let Some(t) = ev.target() {
-                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                        if let Ok(v) = inp.value().parse::<f64>() {
-                                                            let f = f.clone();
-                                                            layout.update_three_dee_config(node_id, move |c| {
-                                                                let o = c.transforms.offsets.entry(f).or_default();
-                                                                o.translation[2] = v;
-                                                            });
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    />
+                                <div style="font-size:10px; color:var(--text-secondary); margin-bottom:4px;">
+                                    {format!("Parent: {} | History: {} | Age: {}", parent_str, history_size, age_str)}
                                 </div>
-                                <div class="settings-row">
-                                    <label class="settings-label" style="min-width:20px;">{"R"}</label>
-                                    <input type="number" class="settings-number-input" step="1"
-                                        value=format!("{:.1}", rx)
-                                        on:change={
-                                            let f = fn4.clone();
-                                            move |ev: leptos::ev::Event| {
-                                                if let Some(t) = ev.target() {
-                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                        if let Ok(v) = inp.value().parse::<f64>() {
-                                                            let f = f.clone();
-                                                            layout.update_three_dee_config(node_id, move |c| {
-                                                                let o = c.transforms.offsets.entry(f).or_default();
-                                                                o.rotation[0] = v.to_radians();
-                                                            });
+                                {if is_editable {
+                                    Some(view! {
+                                        <div class="settings-row">
+                                            <label class="settings-label" style="min-width:20px;">{"X"}</label>
+                                            <input type="number" class="settings-number-input" step="0.1"
+                                                value=format!("{:.2}", tx)
+                                                on:change={
+                                                    let f = fn1.clone();
+                                                    move |ev: leptos::ev::Event| {
+                                                        if let Some(t) = ev.target() {
+                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                                if let Ok(v) = inp.value().parse::<f64>() {
+                                                                    let f = f.clone();
+                                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                                        let o = c.transforms.offsets.entry(f).or_default();
+                                                                        o.translation[0] = v;
+                                                                    });
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            }
-                                        }
-                                    />
-                                    <label class="settings-label" style="min-width:20px;">{"P"}</label>
-                                    <input type="number" class="settings-number-input" step="1"
-                                        value=format!("{:.1}", ry)
-                                        on:change={
-                                            let f = fn5.clone();
-                                            move |ev: leptos::ev::Event| {
-                                                if let Some(t) = ev.target() {
-                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                        if let Ok(v) = inp.value().parse::<f64>() {
-                                                            let f = f.clone();
-                                                            layout.update_three_dee_config(node_id, move |c| {
-                                                                let o = c.transforms.offsets.entry(f).or_default();
-                                                                o.rotation[1] = v.to_radians();
-                                                            });
+                                            />
+                                            <label class="settings-label" style="min-width:20px;">{"Y"}</label>
+                                            <input type="number" class="settings-number-input" step="0.1"
+                                                value=format!("{:.2}", ty)
+                                                on:change={
+                                                    let f = fn2.clone();
+                                                    move |ev: leptos::ev::Event| {
+                                                        if let Some(t) = ev.target() {
+                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                                if let Ok(v) = inp.value().parse::<f64>() {
+                                                                    let f = f.clone();
+                                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                                        let o = c.transforms.offsets.entry(f).or_default();
+                                                                        o.translation[1] = v;
+                                                                    });
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            }
-                                        }
-                                    />
-                                    <label class="settings-label" style="min-width:20px;">{"Y"}</label>
-                                    <input type="number" class="settings-number-input" step="1"
-                                        value=format!("{:.1}", rz)
-                                        on:change={
-                                            let f = fn6.clone();
-                                            move |ev: leptos::ev::Event| {
-                                                if let Some(t) = ev.target() {
-                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                        if let Ok(v) = inp.value().parse::<f64>() {
-                                                            let f = f.clone();
-                                                            layout.update_three_dee_config(node_id, move |c| {
-                                                                let o = c.transforms.offsets.entry(f).or_default();
-                                                                o.rotation[2] = v.to_radians();
-                                                            });
+                                            />
+                                            <label class="settings-label" style="min-width:20px;">{"Z"}</label>
+                                            <input type="number" class="settings-number-input" step="0.1"
+                                                value=format!("{:.2}", tz)
+                                                on:change={
+                                                    let f = fn3.clone();
+                                                    move |ev: leptos::ev::Event| {
+                                                        if let Some(t) = ev.target() {
+                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                                if let Ok(v) = inp.value().parse::<f64>() {
+                                                                    let f = f.clone();
+                                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                                        let o = c.transforms.offsets.entry(f).or_default();
+                                                                        o.translation[2] = v;
+                                                                    });
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            }
-                                        }
-                                    />
-                                </div>
+                                            />
+                                        </div>
+                                        <div class="settings-row">
+                                            <label class="settings-label" style="min-width:20px;">{"R"}</label>
+                                            <input type="number" class="settings-number-input" step="1"
+                                                value=format!("{:.1}", rx)
+                                                on:change={
+                                                    let f = fn4.clone();
+                                                    move |ev: leptos::ev::Event| {
+                                                        if let Some(t) = ev.target() {
+                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                                if let Ok(v) = inp.value().parse::<f64>() {
+                                                                    let f = f.clone();
+                                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                                        let o = c.transforms.offsets.entry(f).or_default();
+                                                                        o.rotation[0] = v.to_radians();
+                                                                    });
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            />
+                                            <label class="settings-label" style="min-width:20px;">{"P"}</label>
+                                            <input type="number" class="settings-number-input" step="1"
+                                                value=format!("{:.1}", ry)
+                                                on:change={
+                                                    let f = fn5.clone();
+                                                    move |ev: leptos::ev::Event| {
+                                                        if let Some(t) = ev.target() {
+                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                                if let Ok(v) = inp.value().parse::<f64>() {
+                                                                    let f = f.clone();
+                                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                                        let o = c.transforms.offsets.entry(f).or_default();
+                                                                        o.rotation[1] = v.to_radians();
+                                                                    });
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            />
+                                            <label class="settings-label" style="min-width:20px;">{"Y"}</label>
+                                            <input type="number" class="settings-number-input" step="1"
+                                                value=format!("{:.1}", rz)
+                                                on:change={
+                                                    let f = fn6.clone();
+                                                    move |ev: leptos::ev::Event| {
+                                                        if let Some(t) = ev.target() {
+                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                                if let Ok(v) = inp.value().parse::<f64>() {
+                                                                    let f = f.clone();
+                                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                                        let o = c.transforms.offsets.entry(f).or_default();
+                                                                        o.rotation[2] = v.to_radians();
+                                                                    });
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            />
+                                        </div>
+                                    })
+                                } else {
+                                    None
+                                }}
                             </div>
                         }.into_any()
                     }).collect::<Vec<_>>()
@@ -1940,20 +2042,45 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
         </div>
 
         // === TOPICS ===
-        <div class="settings-section">
+        <div class="settings-section" style=topics_style>
             <div class="settings-section-header">
                 <h4 class="settings-section-title" on:click=move |_| topics_open.update(|v| *v = !*v)>
                     {move || if topics_open.get() { "▼ Topics" } else { "▶ Topics" }}
                 </h4>
             </div>
             <div class="settings-section-body" class:collapsed=move || !topics_open.get()>
+                // Topic filter dropdown
+                <div class="settings-row" style="margin-bottom:6px;">
+                    <label class="settings-label">{"Filter"}</label>
+                    <select class="settings-select"
+                        on:change=move |ev: leptos::ev::Event| {
+                            if let Some(target) = ev.target() {
+                                if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                                    topic_filter.set(select.value());
+                                }
+                            }
+                        }
+                    >
+                        <option value="all" selected=move || topic_filter.get() == "all">{"List all"}</option>
+                        <option value="visible" selected=move || topic_filter.get() == "visible">{"List visible"}</option>
+                        <option value="invisible" selected=move || topic_filter.get() == "invisible">{"List invisible"}</option>
+                    </select>
+                </div>
                 {move || {
                     let topics = all_topics();
                     let cfg = config();
+                    let filter = topic_filter.get();
                     if topics.is_empty() {
                         vec![view! { <div class="settings-placeholder">{"No topics available"}</div> }.into_any()]
                     } else {
-                        topics.into_iter().map(|topic_name| {
+                        topics.into_iter().filter(|topic_name| {
+                            let topic_cfg = cfg.topics.get(topic_name).cloned().unwrap_or_default();
+                            match filter.as_str() {
+                                "visible" => topic_cfg.visible,
+                                "invisible" => !topic_cfg.visible,
+                                _ => true,
+                            }
+                        }).map(|topic_name| {
                             let topic_cfg = cfg.topics.get(&topic_name).cloned().unwrap_or_default();
                             let is_visible = topic_cfg.visible;
                             let show_axes = topic_cfg.show_axes;
@@ -2151,85 +2278,244 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
         </div>
 
         // === CUSTOM LAYERS ===
-        <div class="settings-section">
-            <div class="settings-section-header">
+        <div class="settings-section" style=custom_layers_style>
+            <div class="settings-section-header" style="display:flex; align-items:center; justify-content:space-between;">
                 <h4 class="settings-section-title" on:click=move |_| custom_layers_open.update(|v| *v = !*v)>
                     {move || if custom_layers_open.get() { "▼ Custom Layers" } else { "▶ Custom Layers" }}
                 </h4>
+                <div style="display:flex; gap:4px;">
+                    <button class="toggle-btn" style="font-size:10px; padding:2px 6px;"
+                        on:click=move |_| {
+                            layout.update_three_dee_config(node_id, |c| {
+                                c.custom_layers.grids.push(lichtblick_panels::three_dee::GridLayer::default());
+                            });
+                        }
+                    >{"+ Grid"}</button>
+                    <button class="toggle-btn" style="font-size:10px; padding:2px 6px;"
+                        on:click=move |_| {
+                            layout.update_three_dee_config(node_id, |c| {
+                                c.custom_layers.urdfs.push(lichtblick_panels::three_dee::UrdfLayer {
+                                    visible: true,
+                                    url: String::new(),
+                                    frame_id: "Global".into(),
+                                });
+                            });
+                        }
+                    >{"+ URDF"}</button>
+                </div>
             </div>
             <div class="settings-section-body" class:collapsed=move || !custom_layers_open.get()>
                 {move || {
                     let cfg = config();
-                    let grids = &cfg.custom_layers.grids;
-                    if grids.is_empty() {
-                        view! { <div class="settings-placeholder">{"No grid layers"}</div> }.into_any()
-                    } else {
-                        let grid = &grids[0];
+                    let available_frames = frames();
+                    let mut views: Vec<leptos::prelude::AnyView> = Vec::new();
+
+                    // Render each grid layer
+                    for (idx, grid) in cfg.custom_layers.grids.iter().enumerate() {
                         let grid_visible = grid.visible;
                         let grid_size = grid.size;
                         let grid_divs = grid.divisions;
-                        view! {
-                            <div class="settings-row">
-                                <label class="settings-label">{"Grid"}</label>
-                                <div class="toggle-group">
-                                    <button class="toggle-btn" class:active=!grid_visible
+                        let grid_color = grid.color.clone();
+                        let grid_frame = grid.frame_id.clone();
+                        let af = available_frames.clone();
+                        views.push(view! {
+                            <div style="padding:4px 0; border-top:1px solid var(--border-color);">
+                                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                                    <span style="font-size:11px; font-weight:500; color:var(--text-primary);">{format!("Grid #{}", idx)}</span>
+                                    <button class="toggle-btn" style="font-size:10px; padding:1px 5px; color:#e55;"
                                         on:click=move |_| {
-                                            layout.update_three_dee_config(node_id, |c| {
-                                                if let Some(g) = c.custom_layers.grids.first_mut() { g.visible = false; }
+                                            layout.update_three_dee_config(node_id, move |c| {
+                                                if idx < c.custom_layers.grids.len() {
+                                                    c.custom_layers.grids.remove(idx);
+                                                }
                                             });
-                                        }>{"Off"}</button>
-                                    <button class="toggle-btn" class:active=grid_visible
-                                        on:click=move |_| {
-                                            layout.update_three_dee_config(node_id, |c| {
-                                                if let Some(g) = c.custom_layers.grids.first_mut() { g.visible = true; }
-                                            });
-                                        }>{"On"}</button>
+                                        }
+                                    >{"✕"}</button>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label">{"Visible"}</label>
+                                    <div class="toggle-group">
+                                        <button class="toggle-btn" class:active=!grid_visible
+                                            on:click=move |_| {
+                                                layout.update_three_dee_config(node_id, move |c| {
+                                                    if let Some(g) = c.custom_layers.grids.get_mut(idx) { g.visible = false; }
+                                                });
+                                            }>{"Off"}</button>
+                                        <button class="toggle-btn" class:active=grid_visible
+                                            on:click=move |_| {
+                                                layout.update_three_dee_config(node_id, move |c| {
+                                                    if let Some(g) = c.custom_layers.grids.get_mut(idx) { g.visible = true; }
+                                                });
+                                            }>{"On"}</button>
+                                    </div>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label">{"Frame"}</label>
+                                    <select class="settings-select"
+                                        on:change=move |ev: leptos::ev::Event| {
+                                            if let Some(target) = ev.target() {
+                                                if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                                                    let val = select.value();
+                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                        if let Some(g) = c.custom_layers.grids.get_mut(idx) { g.frame_id = val; }
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    >
+                                        {af.into_iter().map(|f| {
+                                            let selected = f == grid_frame;
+                                            let fv = f.clone();
+                                            view! { <option value=fv selected=selected>{f}</option> }
+                                        }).collect::<Vec<_>>()}
+                                    </select>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label">{"Size"}</label>
+                                    <input type="number" class="settings-number-input" step="1" min="1"
+                                        value=format!("{:.0}", grid_size)
+                                        on:change=move |ev: leptos::ev::Event| {
+                                            if let Some(target) = ev.target() {
+                                                if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                                    if let Ok(v) = input.value().parse::<f64>() {
+                                                        layout.update_three_dee_config(node_id, move |c| {
+                                                            if let Some(g) = c.custom_layers.grids.get_mut(idx) { g.size = v; }
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    />
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label">{"Divisions"}</label>
+                                    <input type="number" class="settings-number-input" step="1" min="1" max="100"
+                                        value=format!("{}", grid_divs)
+                                        on:change=move |ev: leptos::ev::Event| {
+                                            if let Some(target) = ev.target() {
+                                                if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                                    if let Ok(v) = input.value().parse::<u32>() {
+                                                        layout.update_three_dee_config(node_id, move |c| {
+                                                            if let Some(g) = c.custom_layers.grids.get_mut(idx) { g.divisions = v; }
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    />
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label">{"Color"}</label>
+                                    <input type="color" class="settings-color-input"
+                                        value={
+                                            let c = &grid_color;
+                                            if c.len() > 7 { c[..7].to_string() } else { c.clone() }
+                                        }
+                                        on:input=move |ev: leptos::ev::Event| {
+                                            if let Some(target) = ev.target() {
+                                                if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                                    let val = input.value();
+                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                        if let Some(g) = c.custom_layers.grids.get_mut(idx) { g.color = val; }
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    />
                                 </div>
                             </div>
-                            <div class="settings-row">
-                                <label class="settings-label">{"Grid size"}</label>
-                                <input type="number" class="settings-number-input"
-                                    step="1" min="1"
-                                    value=format!("{:.0}", grid_size)
-                                    on:change=move |ev: leptos::ev::Event| {
-                                        if let Some(target) = ev.target() {
-                                            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
-                                                if let Ok(v) = input.value().parse::<f64>() {
-                                                    layout.update_three_dee_config(node_id, |c| {
-                                                        if let Some(g) = c.custom_layers.grids.first_mut() { g.size = v; }
+                        }.into_any());
+                    }
+
+                    // Render each URDF layer
+                    for (idx, urdf) in cfg.custom_layers.urdfs.iter().enumerate() {
+                        let urdf_visible = urdf.visible;
+                        let urdf_url = urdf.url.clone();
+                        let urdf_frame = urdf.frame_id.clone();
+                        let af = available_frames.clone();
+                        views.push(view! {
+                            <div style="padding:4px 0; border-top:1px solid var(--border-color);">
+                                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+                                    <span style="font-size:11px; font-weight:500; color:var(--text-primary);">{format!("URDF #{}", idx)}</span>
+                                    <button class="toggle-btn" style="font-size:10px; padding:1px 5px; color:#e55;"
+                                        on:click=move |_| {
+                                            layout.update_three_dee_config(node_id, move |c| {
+                                                if idx < c.custom_layers.urdfs.len() {
+                                                    c.custom_layers.urdfs.remove(idx);
+                                                }
+                                            });
+                                        }
+                                    >{"✕"}</button>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label">{"Visible"}</label>
+                                    <div class="toggle-group">
+                                        <button class="toggle-btn" class:active=!urdf_visible
+                                            on:click=move |_| {
+                                                layout.update_three_dee_config(node_id, move |c| {
+                                                    if let Some(u) = c.custom_layers.urdfs.get_mut(idx) { u.visible = false; }
+                                                });
+                                            }>{"Off"}</button>
+                                        <button class="toggle-btn" class:active=urdf_visible
+                                            on:click=move |_| {
+                                                layout.update_three_dee_config(node_id, move |c| {
+                                                    if let Some(u) = c.custom_layers.urdfs.get_mut(idx) { u.visible = true; }
+                                                });
+                                            }>{"On"}</button>
+                                    </div>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label">{"Frame"}</label>
+                                    <select class="settings-select"
+                                        on:change=move |ev: leptos::ev::Event| {
+                                            if let Some(target) = ev.target() {
+                                                if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                                                    let val = select.value();
+                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                        if let Some(u) = c.custom_layers.urdfs.get_mut(idx) { u.frame_id = val; }
                                                     });
                                                 }
                                             }
                                         }
-                                    }
-                                />
-                            </div>
-                            <div class="settings-row">
-                                <label class="settings-label">{"Divisions"}</label>
-                                <input type="number" class="settings-number-input"
-                                    step="1" min="1" max="100"
-                                    value=format!("{}", grid_divs)
-                                    on:change=move |ev: leptos::ev::Event| {
-                                        if let Some(target) = ev.target() {
-                                            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
-                                                if let Ok(v) = input.value().parse::<u32>() {
-                                                    layout.update_three_dee_config(node_id, |c| {
-                                                        if let Some(g) = c.custom_layers.grids.first_mut() { g.divisions = v; }
+                                    >
+                                        {af.into_iter().map(|f| {
+                                            let selected = f == urdf_frame;
+                                            let fv = f.clone();
+                                            view! { <option value=fv selected=selected>{f}</option> }
+                                        }).collect::<Vec<_>>()}
+                                    </select>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label">{"URL"}</label>
+                                    <input type="text" class="settings-select" style="font-size:11px;"
+                                        value=urdf_url
+                                        on:change=move |ev: leptos::ev::Event| {
+                                            if let Some(target) = ev.target() {
+                                                if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                                    let val = input.value();
+                                                    layout.update_three_dee_config(node_id, move |c| {
+                                                        if let Some(u) = c.custom_layers.urdfs.get_mut(idx) { u.url = val; }
                                                     });
                                                 }
                                             }
                                         }
-                                    }
-                                />
+                                    />
+                                </div>
                             </div>
-                        }.into_any()
+                        }.into_any());
+                    }
+
+                    if views.is_empty() {
+                        vec![view! { <div class="settings-placeholder">{"No layers. Use + Grid or + URDF to add."}</div> }.into_any()]
+                    } else {
+                        views
                     }
                 }}
             </div>
         </div>
 
         // === PUBLISH ===
-        <div class="settings-section">
+        <div class="settings-section" style=publish_style>
             <div class="settings-section-header">
                 <h4 class="settings-section-title" on:click=move |_| publish_open.update(|v| *v = !*v)>
                     {move || if publish_open.get() { "▼ Publish" } else { "▶ Publish" }}

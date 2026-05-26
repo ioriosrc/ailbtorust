@@ -244,10 +244,19 @@ fn PanelContainer(node: LayoutNode) -> impl IntoView {
     let submenu_open = RwSignal::new(false);
     let drop_zone = RwSignal::new(Option::<DropPosition>::None);
 
-    let title = if panel_type == PanelType::RawMessages {
+    let is_three_dee = panel_type == PanelType::ThreeDee;
+    let static_title = if panel_type == PanelType::RawMessages {
         String::new() // No title for Raw Messages - topic selector is in the panel's own toolbar
     } else {
         panel_type.display_name().to_string()
+    };
+    let title = move || {
+        if is_three_dee {
+            let cfg = layout.get_three_dee_config_tracked(node_id);
+            if cfg.title.is_empty() { "3D".to_string() } else { cfg.title }
+        } else {
+            static_title.clone()
+        }
     };
     let hide_panel_toolbar = panel_type == PanelType::RawMessages;
 

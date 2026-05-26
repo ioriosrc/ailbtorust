@@ -625,6 +625,13 @@ impl LayoutState {
         })
     }
 
+    /// Get 3D config reactively (subscribes to changes).
+    pub fn get_three_dee_config_tracked(&self, node_id: NodeId) -> ThreeDeeConfig {
+        self.three_dee_configs.with(|configs| {
+            configs.get(&node_id).cloned().unwrap_or_default()
+        })
+    }
+
     /// Update 3D config for a panel.
     pub fn update_three_dee_config(&self, node_id: NodeId, f: impl FnOnce(&mut ThreeDeeConfig)) {
         self.three_dee_configs.update(|configs| {
