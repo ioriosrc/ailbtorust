@@ -4,71 +4,199 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Configuration for the 3D panel.
+/// Full configuration for the 3D panel, matching Lichtblick Node.js settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ThreeDeeConfig {
-    /// Camera position and orientation.
-    pub camera_state: CameraState,
-    /// Topic configurations.
+    /// Title displayed in panel header (default "3D").
+    pub title: String,
+    /// Selected display frame (coordinate reference).
+    pub display_frame: String,
+    /// Follow mode: "pose", "position", or "fixed".
+    pub follow_mode: String,
+    /// Scene rendering settings.
+    pub scene: SceneConfig,
+    /// Camera/view settings.
+    pub view: ViewConfig,
+    /// Transform tree display settings.
+    pub transforms: TransformsConfig,
+    /// Per-topic display settings.
     pub topics: HashMap<String, TopicDisplayConfig>,
-    /// Whether to show grid.
-    pub show_grid: bool,
-    /// Grid size.
-    pub grid_size: f64,
-    /// Background color.
-    pub background_color: String,
-    /// Fixed frame (TF frame to use as world frame).
-    pub fixed_frame: Option<String>,
-    /// Display frame (camera follows this frame).
-    pub display_frame: Option<String>,
+    /// Custom layers (grids, URDFs).
+    pub custom_layers: CustomLayersConfig,
+    /// Publish settings (click-to-publish).
+    pub publish: PublishConfig,
 }
 
 impl Default for ThreeDeeConfig {
     fn default() -> Self {
         Self {
-            camera_state: CameraState::default(),
+            title: "3D".into(),
+            display_frame: "Global".into(),
+            follow_mode: "pose".into(),
+            scene: SceneConfig::default(),
+            view: ViewConfig::default(),
+            transforms: TransformsConfig::default(),
             topics: HashMap::new(),
-            show_grid: true,
-            grid_size: 10.0,
-            background_color: "#1a1a2e".into(),
-            fixed_frame: None,
-            display_frame: None,
+            custom_layers: CustomLayersConfig::default(),
+            publish: PublishConfig::default(),
         }
     }
 }
 
-/// 3D camera state.
+/// Scene group settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CameraState {
-    pub position: [f64; 3],
+#[serde(rename_all = "camelCase")]
+pub struct SceneConfig {
+    /// Show render stats overlay (FPS, draw calls).
+    pub enable_stats: bool,
+    /// Background clear color (hex).
+    pub background_color: String,
+    /// Scale factor for all 3D text labels.
+    pub label_scale: f64,
+    /// Ignore COLLADA <up_axis> tag in DAE models.
+    pub ignore_collada_up_axis: bool,
+    /// Default mesh up axis: "y_up" or "z_up".
+    pub mesh_up_axis: String,
+}
+
+impl Default for SceneConfig {
+    fn default() -> Self {
+        Self {
+            enable_stats: false,
+            background_color: "#1a1a2e".into(),
+            label_scale: 1.0,
+            ignore_collada_up_axis: false,
+            mesh_up_axis: "y_up".into(),
+        }
+    }
+}
+
+/// View/camera group settings (orbit camera).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewConfig {
+    /// Sync camera across multiple 3D panels.
+    pub sync_camera: bool,
+    /// Orbit distance from target.
+    pub distance: f64,
+    /// Perspective (true) or Orthographic (false).
+    pub perspective: bool,
+    /// Camera focal point.
     pub target: [f64; 3],
-    pub up: [f64; 3],
-    pub fov: f64,
+    /// Azimuthal angle (degrees).
+    pub theta: f64,
+    /// Polar pitch angle (degrees).
+    pub phi: f64,
+    /// Vertical field of view (degrees, perspective only).
+    pub fovy: f64,
+    /// Near clipping plane.
     pub near: f64,
+    /// Far clipping plane.
     pub far: f64,
 }
 
-impl Default for CameraState {
+impl Default for ViewConfig {
     fn default() -> Self {
         Self {
-            position: [5.0, 5.0, 5.0],
+            sync_camera: false,
+            distance: 150.0,
+            perspective: true,
             target: [0.0, 0.0, 0.0],
-            up: [0.0, 0.0, 1.0],
-            fov: 45.0,
-            near: 0.01,
-            far: 10000.0,
+            theta: 45.0,
+            phi: 60.0,
+            fovy: 45.0,
+            near: 0.5,
+            far: 5000.0,
         }
     }
 }
 
-/// Configuration for how a topic is displayed in 3D.
+/// Transforms group settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransformsConfig {
+    /// Allow manual TF offset editing.
+    pub editable: bool,
+    /// Show frame name labels in viewport.
+    pub show_labels: bool,
+    /// Font size of frame labels.
+    pub label_size: f64,
+    /// Scale of RGB coordinate axes.
+    pub axis_scale: f64,
+    /// Width of parent-child connection lines.
+    pub line_width: f64,
+    /// Color of connection lines (hex).
+    pub line_color: String,
+    /// Buffer TF messages ahead of playhead.
+    pub enable_preloading: bool,
+    /// Max preload buffer size.
+    pub max_preload_messages: u32,
+    /// Per-frame manual offsets.
+    pub offsets: HashMap<String, TransformOffset>,
+}
+
+impl Default for TransformsConfig {
+    fn default() -> Self {
+        Self {
+            editable: false,
+            show_labels: true,
+            label_size: 0.2,
+            axis_scale: 1.0,
+            line_width: 2.0,
+            line_color: "#ffff00".into(),
+            enable_preloading: false,
+            max_preload_messages: 10000,
+            offsets: HashMap::new(),
+        }
+    }
+}
+
+/// Manual offset for a single TF frame.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransformOffset {
+    /// Translation offset [x, y, z].
+    pub translation: [f64; 3],
+    /// Rotation offset [roll, pitch, yaw] in radians.
+    pub rotation: [f64; 3],
+}
+
+impl Default for TransformOffset {
+    fn default() -> Self {
+        Self {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// Per-topic display configuration (matches extension panelSettings).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TopicDisplayConfig {
+    /// Whether this topic is visible.
     pub visible: bool,
+    /// Custom render color (hex).
     pub color: Option<String>,
-    pub opacity: f64,
-    pub point_size: Option<f64>,
-    pub line_width: Option<f64>,
+    /// Draw outlines on meshes.
+    pub show_outlines: bool,
+    /// Enable caching of computed geometry.
+    pub caching: bool,
+    /// Render coordinate axes on topic entities.
+    pub show_axes: bool,
+    /// Render physical lane boundaries.
+    pub show_physical_lanes: bool,
+    /// Render logical lane boundaries.
+    pub show_logical_lanes: bool,
+    /// Render reference lines.
+    pub show_reference_lines: bool,
+    /// Render bounding boxes.
+    pub show_bounding_box: bool,
+    /// Render 3D vehicle models.
+    pub show_3d_models: bool,
+    /// Path to default 3D model files.
+    pub default_model_path: String,
 }
 
 impl Default for TopicDisplayConfig {
@@ -76,9 +204,85 @@ impl Default for TopicDisplayConfig {
         Self {
             visible: true,
             color: None,
-            opacity: 1.0,
-            point_size: None,
-            line_width: None,
+            show_outlines: true,
+            caching: true,
+            show_axes: true,
+            show_physical_lanes: true,
+            show_logical_lanes: false,
+            show_reference_lines: true,
+            show_bounding_box: true,
+            show_3d_models: false,
+            default_model_path: "/opt/models/vehicles/".into(),
+        }
+    }
+}
+
+/// Custom layers configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomLayersConfig {
+    /// Grid layers.
+    pub grids: Vec<GridLayer>,
+    /// URDF model layers.
+    pub urdfs: Vec<UrdfLayer>,
+}
+
+impl Default for CustomLayersConfig {
+    fn default() -> Self {
+        Self {
+            grids: vec![GridLayer::default()],
+            urdfs: Vec::new(),
+        }
+    }
+}
+
+/// A grid helper layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GridLayer {
+    pub visible: bool,
+    pub size: f64,
+    pub divisions: u32,
+    pub color: String,
+    pub frame_id: String,
+}
+
+impl Default for GridLayer {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            size: 10.0,
+            divisions: 10,
+            color: "#248eff33".into(),
+            frame_id: "Global".into(),
+        }
+    }
+}
+
+/// A URDF model layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UrdfLayer {
+    pub visible: bool,
+    pub url: String,
+    pub frame_id: String,
+}
+
+/// Publish group settings (click-to-publish).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishConfig {
+    /// Message type: "point", "pose", or "pose_estimate".
+    pub publish_type: String,
+    /// Topic to publish to.
+    pub topic: String,
+}
+
+impl Default for PublishConfig {
+    fn default() -> Self {
+        Self {
+            publish_type: "point".into(),
+            topic: "/clicked_point".into(),
         }
     }
 }

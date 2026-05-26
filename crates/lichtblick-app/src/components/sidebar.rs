@@ -12,6 +12,7 @@ use crate::state::app_state::{
     AppState, LayoutNode, LayoutState, NodeId, PanelType, SplitDirection,
     parse_layout_node_internal,
 };
+use lichtblick_panels::three_dee::TopicDisplayConfig;
 
 /// Sidebar component (left or right) with drag-resizable width.
 #[component]
@@ -1376,36 +1377,881 @@ fn rotation_toggle_view(
 }
 
 /// 3D panel settings.
-#[allow(unused_variables)]
 #[component]
 fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
+    let state = use_app_state();
+    let layout = use_layout_state();
+
+    // Section collapsed states
+    let frame_open = RwSignal::new(true);
+    let scene_open = RwSignal::new(false);
+    let view_open = RwSignal::new(false);
+    let transforms_open = RwSignal::new(false);
+    let topics_open = RwSignal::new(false);
+    let custom_layers_open = RwSignal::new(false);
+    let publish_open = RwSignal::new(false);
+
+    // Reactive config reader
+    let config = move || layout.get_three_dee_config(node_id);
+
+    let frames = move || state.tf_frames.get();
+    let current_display_frame = move || state.display_frame.get();
+    let current_follow_mode = move || state.follow_mode.get();
+
+    // --- Frame handlers ---
+    let on_display_frame_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                let val = select.value();
+                state.display_frame.set(val.clone());
+                layout.update_three_dee_config(node_id, |c| c.display_frame = val);
+            }
+        }
+    };
+
+    let on_follow_mode_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                let val = select.value();
+                state.follow_mode.set(val.clone());
+                layout.update_three_dee_config(node_id, |c| c.follow_mode = val);
+            }
+        }
+    };
+
+    // --- Scene handlers ---
+    let on_bg_color_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                let val = input.value();
+                layout.update_three_dee_config(node_id, |c| c.scene.background_color = val);
+            }
+        }
+    };
+
+    let on_label_scale_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(v) = input.value().parse::<f64>() {
+                    layout.update_three_dee_config(node_id, |c| c.scene.label_scale = v);
+                }
+            }
+        }
+    };
+
+    let on_enable_stats_change = move |val: bool| {
+        layout.update_three_dee_config(node_id, move |c| c.scene.enable_stats = val);
+    };
+
+    let on_ignore_collada_change = move |val: bool| {
+        layout.update_three_dee_config(node_id, move |c| c.scene.ignore_collada_up_axis = val);
+    };
+
+    let on_mesh_up_axis_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                let val = select.value();
+                layout.update_three_dee_config(node_id, |c| c.scene.mesh_up_axis = val);
+            }
+        }
+    };
+
+    // --- View handlers ---
+    let on_distance_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(v) = input.value().parse::<f64>() {
+                    layout.update_three_dee_config(node_id, |c| c.view.distance = v);
+                }
+            }
+        }
+    };
+
+    let on_perspective_change = move |val: bool| {
+        layout.update_three_dee_config(node_id, move |c| c.view.perspective = val);
+    };
+
+    let on_sync_camera_change = move |val: bool| {
+        layout.update_three_dee_config(node_id, move |c| c.view.sync_camera = val);
+    };
+
+    let on_fovy_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(v) = input.value().parse::<f64>() {
+                    layout.update_three_dee_config(node_id, |c| c.view.fovy = v);
+                }
+            }
+        }
+    };
+
+    let on_near_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(v) = input.value().parse::<f64>() {
+                    layout.update_three_dee_config(node_id, |c| c.view.near = v);
+                }
+            }
+        }
+    };
+
+    let on_far_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(v) = input.value().parse::<f64>() {
+                    layout.update_three_dee_config(node_id, |c| c.view.far = v);
+                }
+            }
+        }
+    };
+
+    // --- Transforms handlers ---
+    let on_show_labels_change = move |val: bool| {
+        layout.update_three_dee_config(node_id, move |c| c.transforms.show_labels = val);
+    };
+
+    let on_axis_scale_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(v) = input.value().parse::<f64>() {
+                    layout.update_three_dee_config(node_id, |c| c.transforms.axis_scale = v);
+                }
+            }
+        }
+    };
+
+    let on_line_width_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                if let Ok(v) = input.value().parse::<f64>() {
+                    layout.update_three_dee_config(node_id, |c| c.transforms.line_width = v);
+                }
+            }
+        }
+    };
+
+    let on_line_color_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                let val = input.value();
+                layout.update_three_dee_config(node_id, |c| c.transforms.line_color = val);
+            }
+        }
+    };
+
+    let on_editable_change = move |val: bool| {
+        layout.update_three_dee_config(node_id, move |c| c.transforms.editable = val);
+    };
+
+    let on_preloading_change = move |val: bool| {
+        layout.update_three_dee_config(node_id, move |c| c.transforms.enable_preloading = val);
+    };
+
+    // --- Publish handlers ---
+    let on_publish_type_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() {
+                let val = select.value();
+                layout.update_three_dee_config(node_id, |c| c.publish.publish_type = val);
+            }
+        }
+    };
+
+    let on_publish_topic_change = move |ev: leptos::ev::Event| {
+        if let Some(target) = ev.target() {
+            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                let val = input.value();
+                layout.update_three_dee_config(node_id, |c| c.publish.topic = val);
+            }
+        }
+    };
+
+    // --- Topics: list all topics from player ---
+    let all_topics = move || -> Vec<String> {
+        get_player().map(|p| {
+            p.topics().iter().map(|t| t.name.clone()).collect()
+        }).unwrap_or_default()
+    };
+
     view! {
+        // === FRAME ===
         <div class="settings-section">
-            <h4 class="settings-section-title">{"▼ Frame"}</h4>
-            <div class="settings-row">
-                <label class="settings-label">{"Display frame"}</label>
-                <select class="settings-select">
-                    <option selected=true>{"global"}</option>
-                </select>
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| frame_open.update(|v| *v = !*v)>
+                    {move || if frame_open.get() { "▼ Frame" } else { "▶ Frame" }}
+                </h4>
             </div>
-            <div class="settings-row">
-                <label class="settings-label">{"Follow mode"}</label>
-                <select class="settings-select">
-                    <option selected=true>{"Pose"}</option>
-                </select>
+            <div class="settings-section-body" class:collapsed=move || !frame_open.get()>
+                <div class="settings-row">
+                    <label class="settings-label">{"Display frame"}</label>
+                    <select class="settings-select" on:change=on_display_frame_change>
+                        {move || {
+                            let f = frames();
+                            let current = current_display_frame();
+                            if f.is_empty() {
+                                vec![view! { <option selected=true>{"(no frames)"}</option> }.into_any()]
+                            } else {
+                                f.into_iter().map(|frame| {
+                                    let selected = frame == current;
+                                    let val = frame.clone();
+                                    view! { <option value=val selected=selected>{frame}</option> }.into_any()
+                                }).collect::<Vec<_>>()
+                            }
+                        }}
+                    </select>
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Follow mode"}</label>
+                    <select class="settings-select" on:change=on_follow_mode_change>
+                        <option value="pose" selected=move || current_follow_mode() == "pose">{"Pose"}</option>
+                        <option value="position" selected=move || current_follow_mode() == "position">{"Position"}</option>
+                        <option value="fixed" selected=move || current_follow_mode() == "fixed">{"Fixed"}</option>
+                    </select>
+                </div>
             </div>
         </div>
+
+        // === SCENE ===
         <div class="settings-section">
-            <h4 class="settings-section-title">{"▶ Scene"}</h4>
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| scene_open.update(|v| *v = !*v)>
+                    {move || if scene_open.get() { "▼ Scene" } else { "▶ Scene" }}
+                </h4>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !scene_open.get()>
+                <div class="settings-row">
+                    <label class="settings-label">{"Background"}</label>
+                    <input type="color" class="settings-color-input"
+                        value=move || config().scene.background_color
+                        on:input=on_bg_color_change
+                    />
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Label scale"}</label>
+                    <input type="number" class="settings-number-input"
+                        step="0.1" min="0.1" max="5.0"
+                        value=move || format!("{:.1}", config().scene.label_scale)
+                        on:change=on_label_scale_change
+                    />
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Render stats"}</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn" class:active=move || !config().scene.enable_stats
+                            on:click=move |_| on_enable_stats_change(false)>{"Off"}</button>
+                        <button class="toggle-btn" class:active=move || config().scene.enable_stats
+                            on:click=move |_| on_enable_stats_change(true)>{"On"}</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Ignore COLLADA up"}</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn" class:active=move || !config().scene.ignore_collada_up_axis
+                            on:click=move |_| on_ignore_collada_change(false)>{"Off"}</button>
+                        <button class="toggle-btn" class:active=move || config().scene.ignore_collada_up_axis
+                            on:click=move |_| on_ignore_collada_change(true)>{"On"}</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Mesh up axis"}</label>
+                    <select class="settings-select" on:change=on_mesh_up_axis_change>
+                        <option value="y_up" selected=move || config().scene.mesh_up_axis == "y_up">{"Y-up"}</option>
+                        <option value="z_up" selected=move || config().scene.mesh_up_axis == "z_up">{"Z-up"}</option>
+                    </select>
+                </div>
+            </div>
         </div>
+
+        // === VIEW ===
         <div class="settings-section">
-            <h4 class="settings-section-title">{"▶ View"}</h4>
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| view_open.update(|v| *v = !*v)>
+                    {move || if view_open.get() { "▼ View" } else { "▶ View" }}
+                </h4>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !view_open.get()>
+                <div class="settings-row">
+                    <label class="settings-label">{"Perspective"}</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn" class:active=move || !config().view.perspective
+                            on:click=move |_| on_perspective_change(false)>{"Ortho"}</button>
+                        <button class="toggle-btn" class:active=move || config().view.perspective
+                            on:click=move |_| on_perspective_change(true)>{"Persp"}</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Sync camera"}</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn" class:active=move || !config().view.sync_camera
+                            on:click=move |_| on_sync_camera_change(false)>{"Off"}</button>
+                        <button class="toggle-btn" class:active=move || config().view.sync_camera
+                            on:click=move |_| on_sync_camera_change(true)>{"On"}</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Distance"}</label>
+                    <input type="number" class="settings-number-input"
+                        step="1" min="1"
+                        value=move || format!("{:.0}", config().view.distance)
+                        on:change=on_distance_change
+                    />
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"FOV (°)"}</label>
+                    <input type="number" class="settings-number-input"
+                        step="1" min="10" max="120"
+                        value=move || format!("{:.0}", config().view.fovy)
+                        on:change=on_fovy_change
+                    />
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Near clip"}</label>
+                    <input type="number" class="settings-number-input"
+                        step="0.1" min="0.01"
+                        value=move || format!("{:.2}", config().view.near)
+                        on:change=on_near_change
+                    />
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Far clip"}</label>
+                    <input type="number" class="settings-number-input"
+                        step="100" min="100"
+                        value=move || format!("{:.0}", config().view.far)
+                        on:change=on_far_change
+                    />
+                </div>
+            </div>
         </div>
+
+        // === TRANSFORMS ===
         <div class="settings-section">
-            <h4 class="settings-section-title">{"▶ Transforms"}</h4>
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| transforms_open.update(|v| *v = !*v)>
+                    {move || if transforms_open.get() { "▼ Transforms" } else { "▶ Transforms" }}
+                </h4>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !transforms_open.get()>
+                <div class="settings-row">
+                    <label class="settings-label">{"Show labels"}</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn" class:active=move || !config().transforms.show_labels
+                            on:click=move |_| on_show_labels_change(false)>{"Off"}</button>
+                        <button class="toggle-btn" class:active=move || config().transforms.show_labels
+                            on:click=move |_| on_show_labels_change(true)>{"On"}</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Axis scale"}</label>
+                    <input type="number" class="settings-number-input"
+                        step="0.1" min="0.1" max="10.0"
+                        value=move || format!("{:.1}", config().transforms.axis_scale)
+                        on:change=on_axis_scale_change
+                    />
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Line width"}</label>
+                    <input type="number" class="settings-number-input"
+                        step="0.5" min="0.5" max="10.0"
+                        value=move || format!("{:.1}", config().transforms.line_width)
+                        on:change=on_line_width_change
+                    />
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Line color"}</label>
+                    <input type="color" class="settings-color-input"
+                        value=move || config().transforms.line_color
+                        on:input=on_line_color_change
+                    />
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Editable"}</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn" class:active=move || !config().transforms.editable
+                            on:click=move |_| on_editable_change(false)>{"Off"}</button>
+                        <button class="toggle-btn" class:active=move || config().transforms.editable
+                            on:click=move |_| on_editable_change(true)>{"On"}</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Preloading"}</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn" class:active=move || !config().transforms.enable_preloading
+                            on:click=move |_| on_preloading_change(false)>{"Off"}</button>
+                        <button class="toggle-btn" class:active=move || config().transforms.enable_preloading
+                            on:click=move |_| on_preloading_change(true)>{"On"}</button>
+                    </div>
+                </div>
+                // Per-frame offset editors (only when editable)
+                {move || {
+                    let cfg_val = config();
+                    if !cfg_val.transforms.editable {
+                        return vec![];
+                    }
+                    let tf_list = frames();
+                    tf_list.into_iter().map(|frame_name| {
+                        let offset = cfg_val.transforms.offsets.get(&frame_name).cloned()
+                            .unwrap_or_default();
+                        let fn1 = frame_name.clone();
+                        let fn2 = frame_name.clone();
+                        let fn3 = frame_name.clone();
+                        let fn4 = frame_name.clone();
+                        let fn5 = frame_name.clone();
+                        let fn6 = frame_name.clone();
+                        let tx = offset.translation[0];
+                        let ty = offset.translation[1];
+                        let tz = offset.translation[2];
+                        let rx = offset.rotation[0].to_degrees();
+                        let ry = offset.rotation[1].to_degrees();
+                        let rz = offset.rotation[2].to_degrees();
+                        view! {
+                            <div style="padding: 4px 0; border-top: 1px solid var(--border-color);">
+                                <div style="font-size:11px; color:var(--text-primary); margin-bottom:4px; font-weight:500;">
+                                    {frame_name.clone()}
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label" style="min-width:20px;">{"X"}</label>
+                                    <input type="number" class="settings-number-input" step="0.1"
+                                        value=format!("{:.2}", tx)
+                                        on:change={
+                                            let f = fn1.clone();
+                                            move |ev: leptos::ev::Event| {
+                                                if let Some(t) = ev.target() {
+                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                        if let Ok(v) = inp.value().parse::<f64>() {
+                                                            let f = f.clone();
+                                                            layout.update_three_dee_config(node_id, move |c| {
+                                                                let o = c.transforms.offsets.entry(f).or_default();
+                                                                o.translation[0] = v;
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    />
+                                    <label class="settings-label" style="min-width:20px;">{"Y"}</label>
+                                    <input type="number" class="settings-number-input" step="0.1"
+                                        value=format!("{:.2}", ty)
+                                        on:change={
+                                            let f = fn2.clone();
+                                            move |ev: leptos::ev::Event| {
+                                                if let Some(t) = ev.target() {
+                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                        if let Ok(v) = inp.value().parse::<f64>() {
+                                                            let f = f.clone();
+                                                            layout.update_three_dee_config(node_id, move |c| {
+                                                                let o = c.transforms.offsets.entry(f).or_default();
+                                                                o.translation[1] = v;
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    />
+                                    <label class="settings-label" style="min-width:20px;">{"Z"}</label>
+                                    <input type="number" class="settings-number-input" step="0.1"
+                                        value=format!("{:.2}", tz)
+                                        on:change={
+                                            let f = fn3.clone();
+                                            move |ev: leptos::ev::Event| {
+                                                if let Some(t) = ev.target() {
+                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                        if let Ok(v) = inp.value().parse::<f64>() {
+                                                            let f = f.clone();
+                                                            layout.update_three_dee_config(node_id, move |c| {
+                                                                let o = c.transforms.offsets.entry(f).or_default();
+                                                                o.translation[2] = v;
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    />
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-label" style="min-width:20px;">{"R"}</label>
+                                    <input type="number" class="settings-number-input" step="1"
+                                        value=format!("{:.1}", rx)
+                                        on:change={
+                                            let f = fn4.clone();
+                                            move |ev: leptos::ev::Event| {
+                                                if let Some(t) = ev.target() {
+                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                        if let Ok(v) = inp.value().parse::<f64>() {
+                                                            let f = f.clone();
+                                                            layout.update_three_dee_config(node_id, move |c| {
+                                                                let o = c.transforms.offsets.entry(f).or_default();
+                                                                o.rotation[0] = v.to_radians();
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    />
+                                    <label class="settings-label" style="min-width:20px;">{"P"}</label>
+                                    <input type="number" class="settings-number-input" step="1"
+                                        value=format!("{:.1}", ry)
+                                        on:change={
+                                            let f = fn5.clone();
+                                            move |ev: leptos::ev::Event| {
+                                                if let Some(t) = ev.target() {
+                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                        if let Ok(v) = inp.value().parse::<f64>() {
+                                                            let f = f.clone();
+                                                            layout.update_three_dee_config(node_id, move |c| {
+                                                                let o = c.transforms.offsets.entry(f).or_default();
+                                                                o.rotation[1] = v.to_radians();
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    />
+                                    <label class="settings-label" style="min-width:20px;">{"Y"}</label>
+                                    <input type="number" class="settings-number-input" step="1"
+                                        value=format!("{:.1}", rz)
+                                        on:change={
+                                            let f = fn6.clone();
+                                            move |ev: leptos::ev::Event| {
+                                                if let Some(t) = ev.target() {
+                                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                                        if let Ok(v) = inp.value().parse::<f64>() {
+                                                            let f = f.clone();
+                                                            layout.update_three_dee_config(node_id, move |c| {
+                                                                let o = c.transforms.offsets.entry(f).or_default();
+                                                                o.rotation[2] = v.to_radians();
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    />
+                                </div>
+                            </div>
+                        }.into_any()
+                    }).collect::<Vec<_>>()
+                }}
+            </div>
         </div>
+
+        // === TOPICS ===
         <div class="settings-section">
-            <h4 class="settings-section-title">{"▶ Topics"}</h4>
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| topics_open.update(|v| *v = !*v)>
+                    {move || if topics_open.get() { "▼ Topics" } else { "▶ Topics" }}
+                </h4>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !topics_open.get()>
+                {move || {
+                    let topics = all_topics();
+                    let cfg = config();
+                    if topics.is_empty() {
+                        vec![view! { <div class="settings-placeholder">{"No topics available"}</div> }.into_any()]
+                    } else {
+                        topics.into_iter().map(|topic_name| {
+                            let topic_cfg = cfg.topics.get(&topic_name).cloned().unwrap_or_default();
+                            let is_visible = topic_cfg.visible;
+                            let show_axes = topic_cfg.show_axes;
+                            let show_outlines = topic_cfg.show_outlines;
+                            let caching = topic_cfg.caching;
+                            let show_phys = topic_cfg.show_physical_lanes;
+                            let show_log = topic_cfg.show_logical_lanes;
+                            let show_ref = topic_cfg.show_reference_lines;
+                            let show_bb = topic_cfg.show_bounding_box;
+                            let show_3d = topic_cfg.show_3d_models;
+                            let model_path = topic_cfg.default_model_path.clone();
+                            let topic_color = topic_cfg.color.clone().unwrap_or_default();
+                            // Clone names for closures
+                            let tn_vis_off = topic_name.clone();
+                            let tn_vis_on = topic_name.clone();
+                            let tn_color = topic_name.clone();
+                            let tn_outlines = topic_name.clone();
+                            let tn_caching = topic_name.clone();
+                            let tn_axes = topic_name.clone();
+                            let tn_phys = topic_name.clone();
+                            let tn_log = topic_name.clone();
+                            let tn_ref = topic_name.clone();
+                            let tn_bb = topic_name.clone();
+                            let tn_3d = topic_name.clone();
+                            let tn_model = topic_name.clone();
+                            view! {
+                                <div style="padding: 6px 0; border-top: 1px solid var(--border-color);">
+                                    <div class="settings-row">
+                                        <label class="settings-label" style="text-align:left; min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; font-weight:500;" title=topic_name.clone()>
+                                            {topic_name.clone()}
+                                        </label>
+                                        <div class="toggle-group">
+                                            <button class="toggle-btn" class:active=!is_visible
+                                                on:click={
+                                                    let t = tn_vis_off.clone();
+                                                    move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).visible = false; }); }
+                                                }>{"Off"}</button>
+                                            <button class="toggle-btn" class:active=is_visible
+                                                on:click={
+                                                    let t = tn_vis_on.clone();
+                                                    move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).visible = true; }); }
+                                                }>{"On"}</button>
+                                        </div>
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"Color"}</label>
+                                        <input type="color" class="settings-color-input"
+                                            value=if topic_color.is_empty() { "#ffffff".to_string() } else { topic_color }
+                                            on:input={
+                                                let t = tn_color.clone();
+                                                move |ev: leptos::ev::Event| {
+                                                    if let Some(target) = ev.target() {
+                                                        if let Ok(inp) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                                            let val = inp.value();
+                                                            let t = t.clone();
+                                                            layout.update_three_dee_config(node_id, move |c| {
+                                                                c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).color = Some(val);
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"Outlines"}</label>
+                                        <div class="toggle-group">
+                                            <button class="toggle-btn" class:active=!show_outlines on:click={
+                                                let t = tn_outlines.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_outlines = false; }); }
+                                            }>{"Off"}</button>
+                                            <button class="toggle-btn" class:active=show_outlines on:click={
+                                                let t = tn_outlines.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_outlines = true; }); }
+                                            }>{"On"}</button>
+                                        </div>
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"Caching"}</label>
+                                        <div class="toggle-group">
+                                            <button class="toggle-btn" class:active=!caching on:click={
+                                                let t = tn_caching.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).caching = false; }); }
+                                            }>{"Off"}</button>
+                                            <button class="toggle-btn" class:active=caching on:click={
+                                                let t = tn_caching.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).caching = true; }); }
+                                            }>{"On"}</button>
+                                        </div>
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"Axes"}</label>
+                                        <div class="toggle-group">
+                                            <button class="toggle-btn" class:active=!show_axes on:click={
+                                                let t = tn_axes.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_axes = false; }); }
+                                            }>{"Off"}</button>
+                                            <button class="toggle-btn" class:active=show_axes on:click={
+                                                let t = tn_axes.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_axes = true; }); }
+                                            }>{"On"}</button>
+                                        </div>
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"Phys. lanes"}</label>
+                                        <div class="toggle-group">
+                                            <button class="toggle-btn" class:active=!show_phys on:click={
+                                                let t = tn_phys.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_physical_lanes = false; }); }
+                                            }>{"Off"}</button>
+                                            <button class="toggle-btn" class:active=show_phys on:click={
+                                                let t = tn_phys.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_physical_lanes = true; }); }
+                                            }>{"On"}</button>
+                                        </div>
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"Log. lanes"}</label>
+                                        <div class="toggle-group">
+                                            <button class="toggle-btn" class:active=!show_log on:click={
+                                                let t = tn_log.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_logical_lanes = false; }); }
+                                            }>{"Off"}</button>
+                                            <button class="toggle-btn" class:active=show_log on:click={
+                                                let t = tn_log.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_logical_lanes = true; }); }
+                                            }>{"On"}</button>
+                                        </div>
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"Ref. lines"}</label>
+                                        <div class="toggle-group">
+                                            <button class="toggle-btn" class:active=!show_ref on:click={
+                                                let t = tn_ref.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_reference_lines = false; }); }
+                                            }>{"Off"}</button>
+                                            <button class="toggle-btn" class:active=show_ref on:click={
+                                                let t = tn_ref.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_reference_lines = true; }); }
+                                            }>{"On"}</button>
+                                        </div>
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"Bounding box"}</label>
+                                        <div class="toggle-group">
+                                            <button class="toggle-btn" class:active=!show_bb on:click={
+                                                let t = tn_bb.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_bounding_box = false; }); }
+                                            }>{"Off"}</button>
+                                            <button class="toggle-btn" class:active=show_bb on:click={
+                                                let t = tn_bb.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_bounding_box = true; }); }
+                                            }>{"On"}</button>
+                                        </div>
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"3D models"}</label>
+                                        <div class="toggle-group">
+                                            <button class="toggle-btn" class:active=!show_3d on:click={
+                                                let t = tn_3d.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_3d_models = false; }); }
+                                            }>{"Off"}</button>
+                                            <button class="toggle-btn" class:active=show_3d on:click={
+                                                let t = tn_3d.clone();
+                                                move |_| { let t = t.clone(); layout.update_three_dee_config(node_id, move |c| { c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).show_3d_models = true; }); }
+                                            }>{"On"}</button>
+                                        </div>
+                                    </div>
+                                    <div class="settings-row">
+                                        <label class="settings-label">{"Model path"}</label>
+                                        <input type="text" class="settings-select" style="font-size:11px;"
+                                            value=model_path
+                                            on:change={
+                                                let t = tn_model.clone();
+                                                move |ev: leptos::ev::Event| {
+                                                    if let Some(target) = ev.target() {
+                                                        if let Ok(inp) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                                            let val = inp.value();
+                                                            let t = t.clone();
+                                                            layout.update_three_dee_config(node_id, move |c| {
+                                                                c.topics.entry(t).or_insert_with(TopicDisplayConfig::default).default_model_path = val;
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                </div>
+                            }.into_any()
+                        }).collect::<Vec<_>>()
+                    }
+                }}
+            </div>
+        </div>
+
+        // === CUSTOM LAYERS ===
+        <div class="settings-section">
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| custom_layers_open.update(|v| *v = !*v)>
+                    {move || if custom_layers_open.get() { "▼ Custom Layers" } else { "▶ Custom Layers" }}
+                </h4>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !custom_layers_open.get()>
+                {move || {
+                    let cfg = config();
+                    let grids = &cfg.custom_layers.grids;
+                    if grids.is_empty() {
+                        view! { <div class="settings-placeholder">{"No grid layers"}</div> }.into_any()
+                    } else {
+                        let grid = &grids[0];
+                        let grid_visible = grid.visible;
+                        let grid_size = grid.size;
+                        let grid_divs = grid.divisions;
+                        view! {
+                            <div class="settings-row">
+                                <label class="settings-label">{"Grid"}</label>
+                                <div class="toggle-group">
+                                    <button class="toggle-btn" class:active=!grid_visible
+                                        on:click=move |_| {
+                                            layout.update_three_dee_config(node_id, |c| {
+                                                if let Some(g) = c.custom_layers.grids.first_mut() { g.visible = false; }
+                                            });
+                                        }>{"Off"}</button>
+                                    <button class="toggle-btn" class:active=grid_visible
+                                        on:click=move |_| {
+                                            layout.update_three_dee_config(node_id, |c| {
+                                                if let Some(g) = c.custom_layers.grids.first_mut() { g.visible = true; }
+                                            });
+                                        }>{"On"}</button>
+                                </div>
+                            </div>
+                            <div class="settings-row">
+                                <label class="settings-label">{"Grid size"}</label>
+                                <input type="number" class="settings-number-input"
+                                    step="1" min="1"
+                                    value=format!("{:.0}", grid_size)
+                                    on:change=move |ev: leptos::ev::Event| {
+                                        if let Some(target) = ev.target() {
+                                            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                                if let Ok(v) = input.value().parse::<f64>() {
+                                                    layout.update_three_dee_config(node_id, |c| {
+                                                        if let Some(g) = c.custom_layers.grids.first_mut() { g.size = v; }
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                />
+                            </div>
+                            <div class="settings-row">
+                                <label class="settings-label">{"Divisions"}</label>
+                                <input type="number" class="settings-number-input"
+                                    step="1" min="1" max="100"
+                                    value=format!("{}", grid_divs)
+                                    on:change=move |ev: leptos::ev::Event| {
+                                        if let Some(target) = ev.target() {
+                                            if let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() {
+                                                if let Ok(v) = input.value().parse::<u32>() {
+                                                    layout.update_three_dee_config(node_id, |c| {
+                                                        if let Some(g) = c.custom_layers.grids.first_mut() { g.divisions = v; }
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                />
+                            </div>
+                        }.into_any()
+                    }
+                }}
+            </div>
+        </div>
+
+        // === PUBLISH ===
+        <div class="settings-section">
+            <div class="settings-section-header">
+                <h4 class="settings-section-title" on:click=move |_| publish_open.update(|v| *v = !*v)>
+                    {move || if publish_open.get() { "▼ Publish" } else { "▶ Publish" }}
+                </h4>
+            </div>
+            <div class="settings-section-body" class:collapsed=move || !publish_open.get()>
+                <div class="settings-row">
+                    <label class="settings-label">{"Type"}</label>
+                    <select class="settings-select" on:change=on_publish_type_change>
+                        <option value="point" selected=move || config().publish.publish_type == "point">{"Point"}</option>
+                        <option value="pose" selected=move || config().publish.publish_type == "pose">{"Pose"}</option>
+                        <option value="pose_estimate" selected=move || config().publish.publish_type == "pose_estimate">{"Pose Estimate"}</option>
+                    </select>
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Topic"}</label>
+                    <input type="text" class="settings-select"
+                        value=move || config().publish.topic
+                        on:change=on_publish_topic_change
+                    />
+                </div>
+            </div>
         </div>
     }
 }

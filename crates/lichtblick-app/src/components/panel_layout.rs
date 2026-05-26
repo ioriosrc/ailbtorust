@@ -512,7 +512,7 @@ fn PanelContent(panel_type: PanelType, topic: Option<String>, node_id: NodeId) -
                 view! { <ImagePanel topic=t node_id=node_id /> }.into_any()
             }
         }
-        PanelType::ThreeDee => view! { <ThreeDeePanel /> }.into_any(),
+        PanelType::ThreeDee => view! { <ThreeDeePanel node_id=node_id /> }.into_any(),
         PanelType::RawMessages => {
             let t = topic.unwrap_or_default();
             view! { <RawMessagesPanel topic=t node_id=node_id /> }.into_any()

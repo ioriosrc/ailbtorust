@@ -9,6 +9,7 @@ pub mod app;
 pub mod cdr_decoder;
 pub mod components;
 pub mod decoder;
+pub mod extensions;
 pub mod mcap_reader;
 pub mod panels;
 pub mod player;

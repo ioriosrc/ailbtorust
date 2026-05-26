@@ -132,3 +132,69 @@ input.click();
 3. Check chunk_cache scan - are irrelevant chunks being skipped?
 4. Check image panel - is it blocking on decode? (should use Blob URLs)
 5. Use browser DevTools Performance tab to find frame drops
+
+## Extension System Architecture
+
+### Overview
+Extensions are `.foxe` ZIP archives containing JavaScript converter code. They are stored in IndexedDB and activated at startup. The primary use case is message converters that transform protobuf messages into FrameTransforms for the 3D panel.
+
+### Key Files
+- `src/extensions/manager.rs` — JS bridge (inline_js block), converter registry, protobufjs init
+- `src/extensions/storage.rs` — IndexedDB CRUD operations
+- `src/extensions/loader.rs` — ZIP parser (Store + Deflate methods)
+- `src/extensions/types.rs` — ExtensionInfo, StoredExtension, ContributionPoints
+
+### JavaScript Global State (in manager.rs inline_js)
+```javascript
+globalThis.__extensionConverters  // { fromSchemaName: [converterFn, ...] }
+globalThis.__protoDeserializers   // { schemaName: deserializeFn }
+globalThis.__protoDescriptorRoot  // protobufjs Root from descriptor.json
+globalThis.__protobufjs           // protobufjs library reference
+```
+
+### Critical Functions (extern "C" in manager.rs)
+- `js_init_protobuf()` — ASYNC. Loads protobuf CDN + fetches descriptor.json
+- `js_is_protobuf_ready()` — Returns true when both __protobufjs and __protoDescriptorRoot exist
+- `js_execute_extension(source, id, name)` — Activates extension JS, stores converters
+- `js_register_proto_schema(name, data)` — Decodes FileDescriptorSet, caches deserializer
+- `js_convert_message_to_frames(schema, msgData)` — Full pipeline: deserialize → convert → extract
+- `js_has_converters(fromSchemaName)` — Checks if converters exist for schema
+
+### Protobufjs Browser Constraints (IMPORTANT)
+- protobufjs CDN bundle does NOT include `ext/descriptor` (it uses CommonJS `require()`)
+- Solution: fetch `descriptor.json` directly → `Root.fromJSON(json)` → store globally
+- This is an ASYNC operation — schema registration fails silently until ready
+- Never mark a schema as "failed" if protobuf simply hasn't loaded yet (race condition)
+
+### Converter Pipeline (in three_dee_panel.rs frame tick Effect)
+1. Check if `js_has_converters(schema_name)` → converters exist for this topic
+2. Check if schema is in REGISTERED_SCHEMAS → already decoded
+3. If not registered: check `js_is_protobuf_ready()` → skip if not ready (DON'T fail)
+4. Register schema: `js_register_proto_schema(name, schema_data)` → decode FileDescriptorSet
+5. Check timestamp dedup: skip if same `log_time_ns` as last processed
+6. Call `js_convert_message_to_frames(schema, msgData)` → returns JsValue array
+7. Parse each frame transform → insert into TfTree
+
+### TF Tree System
+- **File**: `src/panels/tf_tree.rs`
+- `TfTree::insert(StampedTransform)` — adds/updates transform in tree
+- `TfTree::frames()` → Vec<String> of all known frame names
+- `TfTree::lookup(target, source, time)` → chain transform with SLERP interpolation
+- Display Frame dropdown reads `state.tf_frames` signal (populated from TfTree::frames)
+- Auto-select from preferred: ["map", "odom", "world", "earth", "base_link", "Global"]
+
+## When Working on Extensions
+1. The inline_js block in manager.rs is the JavaScript bridge — ALL JS lives there
+2. Protobuf init is async — test with `js_is_protobuf_ready()` before assuming it works
+3. Browser environment: no `require()`, no Node.js APIs, no CommonJS modules
+4. Extensions call `registerMessageConverter({ fromSchemaName, toSchemaName, converter })` during activation
+5. `converter(message, event)` receives a deserialized JS object and returns `{ frameTransforms: [...] }`
+6. Failed schemas are tracked per-session — restart to retry genuinely broken schemas
+
+## When Debugging 3D/TF Issues
+1. Check browser console for `[Extension]` prefixed messages
+2. Verify protobuf loaded: `globalThis.__protobufjs` and `globalThis.__protoDescriptorRoot` exist
+3. Check `globalThis.__extensionConverters` has entries for the expected schema
+4. Check `globalThis.__protoDeserializers` has the schema after first message processed
+5. If frames don't appear: verify converter returns `frameTransforms` array (not `frame_transforms`)
+6. TfTree is in a thread-local — frames only appear after at least one transform is inserted

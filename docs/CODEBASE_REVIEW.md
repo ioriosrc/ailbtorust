@@ -25,26 +25,28 @@ This document contains a high-level review of the `ailbtorust` repository, outli
 - **XSS via Message Payloads**: If string payloads from ROS topics are rendered directly into HTML without escaping (e.g., `inner_html`), it's a vector for XSS.
   - *Suggestion*: Always use Leptos text nodes or sanitize HTML.
 
-## 4. Missing Features (Compared to Original Lichtblick/Foxglove)
+## 4. Feature Status (vs. Original Lichtblick/Foxglove)
 
-While the Rust port is highly ambitious, it currently lacks several features present in the original TypeScript version:
+### Implemented
+1. **Extension System**: `.foxe` package loading, JS activation, message converter registry, protobufjs integration. Not a full plugin API (no custom panels in JS yet) but converter pipeline works end-to-end.
+2. **TF Tree & Coordinate Frames**: Full transform hierarchy with SLERP interpolation, time-based lookup, Display Frame selector. Sources: TF CDR messages + extension converters.
+3. **Layout Serialization**: Save, export, import, and share layout JSON (localStorage + file download). Format matches Lichtblick original.
+4. **Dynamic Protobuf Deserialization**: FileDescriptorSet schemas decoded at runtime via protobufjs (CDN). Supports any protobuf message type (OSI, custom messages).
 
-1. **Extension System API**: 
-   - *Original*: Allows users to write custom panels in TS/React.
-   - *Rust Port*: Difficult to replicate in WASM. A solution could involve Rhai/Lua scripting or compiling user panels as WASI components.
-2. **Advanced 3D Rendering**:
-   - *Original*: Supports complex TF (transform) trees, URDF (robot models), and diverse markers (meshes, arrows, text).
-   - *Rust Port*: Appears to currently support basic PointCloud2, Grid, and Axes. Needs a full Scenegraph implementation to support complex coordinate frame transformations and mesh rendering.
-3. **Layout Serialization & Workspaces**:
-   - *Original*: Users can save, export, and share layout JSON files.
-   - *Rust Port*: Needs a system to serialize the state of all panels and the mosaic layout into JSON and restore it from LocalStorage or a file.
-4. **Dynamic Type Deserialization (ROS1 / ROS2 / Protobuf / FlatBuffers)**:
-   - *Original*: Extracts schemas dynamically and constructs JSON-like representations for Plot and Raw Data panels.
-   - *Rust Port*: Rust's static typing makes dynamic schema parsing harder. Needs a robust AST/Value representation (like `serde_json::Value` but for binary formats) to plot arbitrary nested message fields (e.g., `msg.pose.position.x`).
-5. **Foxglove Data Platform Integration**:
-   - Streaming directly from Foxglove cloud via their API.
-6. **WebRTC Support**:
-   - Video streaming from ROS cameras using WebRTC (common in modern remote operation setups).
+### Partially Implemented
+1. **Advanced 3D Rendering**:
+   - Has: PointCloud2, grid, axes, basic frame visualization
+   - Missing: URDF robot models, mesh markers (STL/DAE), text markers, arrow markers, complex scene graph
+2. **Dynamic Type Deserialization**:
+   - Has: CDR (ROS2), ROS1 serialization, Protobuf (binary + schema-based with field numbers)
+   - Missing: FlatBuffers support, JSON Schema support
+
+### Not Yet Implemented
+1. **Custom JS Panels**: Extensions can register panels but rendering them in WASM requires embedded JS runtime or iframe approach.
+2. **Foxglove Data Platform Integration**: Cloud streaming via API.
+3. **WebRTC Support**: Video streaming from ROS cameras.
+4. **WebSocket Live Data**: Real-time connection to running robots (trait exists, implementation pending).
+5. **Message Path Evaluation for Plot**: Arbitrary nested field access like `msg.pose.position.x` for Plot panel.
 
 ## Summary
-The `ailbtorust` project has an excellent foundation using Leptos. The primary focus for future development should be on **stabilizing binary parsing** (preventing panics), **expanding the 3D renderer** (Scenegraph, URDF, TF), and **implementing dynamic message evaluation** to bring the Plot and Raw Data panels to feature parity with the original suite.
+The `ailbtorust` project has a solid foundation using Leptos with a working extension system, TF tree, and protobuf converter pipeline. The primary focus for future development should be on **expanding the 3D renderer** (URDF, mesh markers, full scene graph), **implementing message path evaluation** (for Plot panel field access like `msg.pose.position.x`), and **adding WebSocket live data** to support real-time robot connections. The extension system architecture (JS bridge via inline_js + protobufjs CDN) is proven and can be extended for additional converter output types beyond FrameTransforms.

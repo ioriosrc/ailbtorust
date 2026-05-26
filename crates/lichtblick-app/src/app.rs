@@ -4,6 +4,7 @@
 use leptos::prelude::*;
 
 use crate::components::workspace::Workspace;
+use crate::extensions::manager::provide_extension_state;
 use crate::state::app_state::{AppState, provide_app_state};
 
 /// Root application component.
@@ -11,6 +12,10 @@ use crate::state::app_state::{AppState, provide_app_state};
 pub fn App() -> impl IntoView {
     // Provide global application state
     provide_app_state();
+
+    // Provide extension state and load installed extensions
+    let ext_state = provide_extension_state();
+    ext_state.load_from_storage();
 
     view! {
         <div class="lichtblick-app" data-theme="dark">

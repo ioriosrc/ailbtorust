@@ -23,6 +23,9 @@ leptos_meta = { workspace = true }
 mcap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+prost-reflect = { workspace = true }
+bytes = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
 wasm-logger = { workspace = true }
@@ -36,3 +39,5 @@ gloo-utils = { workspace = true }
 gloo-file = { workspace = true }
 lz4_flex = { workspace = true }
 ruzstd = { workspace = true }
+futures = { workspace = true }
+zip = { workspace = true }

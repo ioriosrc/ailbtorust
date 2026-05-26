@@ -7,6 +7,7 @@ use std::rc::Rc;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use lichtblick_core::settings::ColorScheme;
+use lichtblick_panels::three_dee::ThreeDeeConfig;
 
 use crate::player::McapPlayer;
 
@@ -255,6 +256,8 @@ pub struct LayoutState {
     pub dragging_panel_id: RwSignal<Option<NodeId>>,
     /// Per-panel font size overrides.
     pub panel_font_sizes: RwSignal<HashMap<NodeId, String>>,
+    /// Per-panel 3D settings, keyed by NodeId.
+    pub three_dee_configs: RwSignal<HashMap<NodeId, ThreeDeeConfig>>,
 }
 
 impl LayoutState {
@@ -278,6 +281,7 @@ impl LayoutState {
             saved_tree_json: RwSignal::new(saved_json),
             dragging_panel_id: RwSignal::new(None),
             panel_font_sizes: RwSignal::new(HashMap::new()),
+            three_dee_configs: RwSignal::new(HashMap::new()),
         }
     }
 
@@ -611,6 +615,28 @@ impl LayoutState {
     pub fn reset_image_config(&self, node_id: NodeId) {
         self.image_configs.update(|configs| {
             configs.insert(node_id, ImagePanelConfig::default());
+        });
+    }
+
+    /// Get 3D config for a panel (creates default if not present).
+    pub fn get_three_dee_config(&self, node_id: NodeId) -> ThreeDeeConfig {
+        self.three_dee_configs.with_untracked(|configs| {
+            configs.get(&node_id).cloned().unwrap_or_default()
+        })
+    }
+
+    /// Update 3D config for a panel.
+    pub fn update_three_dee_config(&self, node_id: NodeId, f: impl FnOnce(&mut ThreeDeeConfig)) {
+        self.three_dee_configs.update(|configs| {
+            let config = configs.entry(node_id).or_insert_with(ThreeDeeConfig::default);
+            f(config);
+        });
+    }
+
+    /// Reset 3D config to defaults.
+    pub fn reset_three_dee_config(&self, node_id: NodeId) {
+        self.three_dee_configs.update(|configs| {
+            configs.insert(node_id, ThreeDeeConfig::default());
         });
     }
 
@@ -1116,6 +1142,17 @@ pub struct AppState {
 
     /// Which settings tab is active: "general", "extensions", "experimental", "about"
     pub settings_tab: RwSignal<String>,
+
+    // ===== TF / Coordinate Frames =====
+
+    /// Available coordinate frame names discovered from TF messages.
+    pub tf_frames: RwSignal<Vec<String>>,
+
+    /// Currently selected display frame for the 3D panel.
+    pub display_frame: RwSignal<String>,
+
+    /// Follow mode: "pose", "position", or "fixed".
+    pub follow_mode: RwSignal<String>,
 }
 
 /// Provide the global app state to the component tree.
@@ -1194,6 +1231,9 @@ pub fn provide_app_state() {
         memory_indicator_enabled: RwSignal::new(saved_memory_indicator),
         settings_dialog_open: RwSignal::new(false),
         settings_tab: RwSignal::new("general".to_string()),
+        tf_frames: RwSignal::new(Vec::new()),
+        display_frame: RwSignal::new(String::new()),
+        follow_mode: RwSignal::new("pose".to_string()),
     };
 
     provide_context(state);

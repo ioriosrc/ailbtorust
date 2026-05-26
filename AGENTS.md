@@ -14,10 +14,11 @@ The reference implementation is the original Lichtblick TypeScript/React app. Wh
 General-purpose development. Handles feature implementation, bug fixes, refactoring.
 
 **Key knowledge:**
-- Build: `cargo build --target wasm32-unknown-unknown`
-- Dev server: `trunk serve --port 8081` (from project root)
+- Build check: `cargo check --target wasm32-unknown-unknown`
+- Dev server: `cd /Users/CTW03722/git/ailbtorust && bash dev.sh` (port 8081)
 - Main app crate: `crates/lichtblick-app/`
 - CSS: `web/style.css` (no CSS framework, manual styles)
+- Extensions: `lichtblick.asam-osi-converter-1.0.0/` (installed via IndexedDB)
 
 ### Performance Agent
 For diagnosing and fixing playback stuttering, frame drops, memory issues.
@@ -27,6 +28,7 @@ For diagnosing and fixing playback stuttering, frame drops, memory issues.
 - Chunk loading pipeline (File.slice → FileReader → parse → cache)
 - Signal cascading from `frame_tick` → all panel Effects
 - Memory: chunk_cache eviction, Rc<Vec<u8>> data sharing
+- Extension converter overhead in frame tick (protobuf decode + JS converter)
 
 **Proven fixes:**
 - Time-range early-out before binary search in chunk scan
@@ -34,6 +36,8 @@ For diagnosing and fixing playback stuttering, frame drops, memory issues.
 - Reduce prefetch batch (2 chunks, not 5)
 - Reduce ahead window (3s, not 10s)
 - Generation counter to discard stale async loads
+- Timestamp caching: skip converter if same `log_time_ns` as last processed
+- Failed schema tracking: never retry protobuf decode for permanently broken schemas
 
 ### MCAP Agent
 For MCAP file format work: parsing, seeking, chunk management.
@@ -47,12 +51,60 @@ For MCAP file format work: parsing, seeking, chunk management.
 - Entries: `channel_id(u16) + count(u64)`, length-prefixed with u32
 - ChunkIndex gives time range + file offset per chunk
 - Chunks contain compressed records (Message, Schema, Channel)
+- Schema data for protobuf topics = binary `FileDescriptorSet` (NOT .proto text)
+
+### Extension Agent
+For the extension system: loading, activation, converter pipeline, SceneUpdate processing.
+
+**Key files:**
+- `src/extensions/manager.rs` - Extension lifecycle + JS bridge (inline_js)
+- `src/extensions/storage.rs` - IndexedDB async persistence
+- `src/extensions/loader.rs` - .foxe ZIP parser (Store + Deflate)
+- `src/extensions/types.rs` - ExtensionInfo, StoredExtension, ContributionPoints
+
+**Extension system architecture:**
+- Extensions are `.foxe` ZIP files containing `package.json` + `dist/extension.js`
+- Activated via `new Function()` in WASM-bindgen inline JS helper
+- Extension JS receives mock `ExtensionContext` with `registerMessageConverter`
+- Converters stored in `globalThis.__extensionConverters[fromSchemaName]`
+- **Calling convention** (matches real Lichtblick `messageProcessing.ts`):
+  ```javascript
+  converter(message, messageEvent, globalVariables, context)
+  // message = raw decoded proto object (snake_case fields)
+  // messageEvent = { topic, schemaName, receiveTime, message, sizeInBytes }
+  // globalVariables = undefined (not yet implemented)
+  // context = { emitAlert: () => {} }
+  ```
+
+**Two converter output paths:**
+1. `js_convert_message_with_object(schema, msgObj)` → `foxglove.FrameTransforms` → flat array of {parent_frame_id, child_frame_id, tx,ty,tz, rx,ry,rz,rw, timestamp_sec,timestamp_nsec}
+2. `js_convert_message_to_scene(schema, msgObj)` → `foxglove.SceneUpdate` → `{ cubes: [...], lines: [...] }` with flattened primitives
+
+**Protobuf decoding (Rust-native):**
+- Uses `prost-reflect` (NOT protobufjs) to decode binary protobuf messages
+- `DynamicMessage::decode(descriptor, bytes)` → `dynamic_message_to_js()` → JsValue
+- Custom conversion: snake_case fields, longs→f64, Timestamp→{sec,nsec}, all defaults emitted
+- `PROTO_POOLS` thread-local: caches compiled DescriptorPools per schema
+- `FAILED_SCHEMAS` thread-local: permanently failed schemas never retried
+
+**Critical details:**
+- Converter call order matters: `messageObj` (raw message) MUST be first arg
+- If extension accesses `msg.global_ground_truth`, `msg` is the raw message, NOT the messageEvent wrapper
+- `google.protobuf.Timestamp` → `{sec, nsec}` (not `{seconds, nanos}`) for Foxglove compatibility
+- Timestamp dedup: skip converter if same `log_time_ns` as previously processed
+
+**Installed extension:**
+- `lichtblick.asam-osi-converter-1.0.0` — converts:
+  - `osi3.SensorView` → `foxglove.FrameTransforms` (ego_vehicle_bb_center, ego_vehicle_rear_axle, Global)
+  - `osi3.SensorView` → `foxglove.SceneUpdate` (vehicles as cubes, lanes as lines, traffic signs/lights)
+  - `osi3.GroundTruth` → `foxglove.FrameTransforms`
+  - `osi3.GroundTruth` → `foxglove.SceneUpdate`
 
 ### UI/Sidebar Agent
 For sidebar tabs, panel settings, layout management.
 
 **Key files:**
-- `src/components/sidebar.rs` - 4-tab interface (Panel/Topics/Alerts/Layouts)
+- `src/components/sidebar.rs` - 5-tab interface (Panel/Topics/Alerts/Layouts/Extensions)
 - `src/components/topic_list.rs` - Filterable topic list with Hz/count
 - `src/state/app_state.rs` - AppState, LayoutState, signals
 
@@ -61,6 +113,12 @@ For sidebar tabs, panel settings, layout management.
 - Tab 1 (Topics): `TopicList` component with search filter, Hz from summary stats
 - Tab 2 (Alerts): Checks for >60Hz topics, shows warning matching original Lichtblick
 - Tab 3 (Layouts): Create/import/export/load from localStorage
+- Tab 4 (Extensions): Install/uninstall .foxe extensions, drag-and-drop zone
+
+**ThreeDeeSettings:**
+- Display Frame dropdown: dynamically populated from `state.tf_frames` signal
+- Follow Mode: Pose/Position/Fixed selector
+- Shows "(no frames)" when TF tree is empty
 
 ### Panel Agent
 For creating or modifying visualization panels.
@@ -74,6 +132,53 @@ For creating or modifying visualization panels.
 
 **Existing panels:** Image, ThreeDee, RawMessages, Log, Plot, DataSourceInfo, Diagnostics, StateTransitions, Teleop
 
+### 3D/TF Agent
+For 3D rendering, transform tree, coordinate frames, SceneUpdate visualization.
+
+**Key files:**
+- `src/panels/three_dee_panel.rs` - WebGL2 scene + TF + converter pipeline + SceneUpdate rendering
+- `src/panels/tf_tree.rs` - TfTree, TransformBuffer, SLERP interpolation
+
+**TF system:**
+- `TfTree`: manages parent-child frame relationships, timestamps, transforms
+- `StampedTransform`: { parent_frame, child_frame, timestamp_ns, translation: Vec3d, rotation: Quaternion }
+- Sources: (1) native TF/CDR messages, (2) extension converters (prost-reflect → FrameTransforms), (3) PointCloud2 frame_id
+- `decode_tf_message_cdr(data)` → parses CDR-encoded tf2_msgs/TFMessage
+- `TfTree::frames()` → all known frame names → populates Display Frame dropdown
+- `TfTree::lookup(target, source, time)` → chain transform via tree traversal + SLERP
+- Auto-selects display frame from preferred list: ["map", "odom", "world", "earth", "base_link", "Global"]
+
+**WebGL2 rendering pipeline:**
+- Shaders: Grid (per-vertex color), PointCloud (per-vertex + pointSize), Line/Axes (per-vertex + modelMatrix), UniformColor (position + u_color + u_modelMatrix)
+- Static VAOs: grid, axes (RGB 3-axis), cube wireframe (12 edges, unit cube at origin)
+- Dynamic VAOs: point_cloud (positions+colors), scene_line (per-draw upload)
+- Render order: Clear → Grid → Point Clouds → TF Axes → Scene Cubes → Scene Lines
+
+**SceneUpdate rendering (cubes/lines):**
+- `SCENE_ENTITIES` thread-local: `(Vec<SceneCube>, Vec<SceneLine>)` updated per message
+- Per cube: TF lookup (display_frame → entity.frame_id) × `build_model_matrix(pose, scale)` → draw unit cube wireframe
+- Per line: TF lookup × pose → upload points to dynamic buffer → draw as LINE_STRIP/LOOP/LIST
+- `build_model_matrix(px,py,pz, qx,qy,qz,qw, sx,sy,sz)` → quaternion-to-rotation-matrix + translate + scale
+
+**KNOWN ISSUE - Coordinate System:**
+- OSI/ROS uses Z-up (ENU convention): X=forward, Y=left, Z=up
+- GL renderer uses Y-up: X=right, Y=up, Z=forward
+- **Missing coordinate conversion**: Need global rotation `gl_x=ros_x, gl_y=ros_z, gl_z=-ros_y`
+- This affects both scene entity positions AND TF frame transforms
+- Fix: Apply -90° X-rotation matrix as pre-transform before view-projection
+
+**Thread-locals in three_dee_panel.rs:**
+- `SCENE`: WebGL context, buffers, shader programs (SceneState)
+- `TF_STATE`: TfTree instance
+- `SCENE_ENTITIES`: (Vec<SceneCube>, Vec<SceneLine>) from SceneUpdate
+- `PROTO_POOLS`: HashMap<schema_name, DescriptorPool> for prost-reflect
+- `FAILED_SCHEMAS`: HashSet of permanently failed schemas (never retry)
+
+**Frame tick Effect processing order:**
+1. Native TF/CDR messages → decode → insert into TfTree
+2. Extension converters (with readiness check, timestamp dedup, schema registration)
+3. PointCloud2 messages (with timestamp dedup)
+
 ---
 
 ## Critical Rules
@@ -85,10 +190,20 @@ For creating or modifying visualization panels.
 5. **RefCell borrow conflicts** - collect updates into Vec, then apply separately
 6. **Port 8081 for dev** - always kill existing process first
 7. **Match Lichtblick original behavior** - when the TypeScript version does X, we do X
+8. **Protobufjs is async** - don't mark schemas as failed if protobuf isn't ready yet
+9. **Browser ≠ Node.js** - CDN protobufjs doesn't support CommonJS `require()`. Use fetch() for descriptor.json
+10. **Extension converters are synchronous** - once schema is registered, conversion is a single JS call per message
 
 ---
 
-## Test MCAP Characteristics
+## Test MCAP Files
+
+### SanDiego OSI MCAP
+- Path: `/Users/CTW03722/Downloads/SanDiego_san_diego_sc7_urban_splits_and_parking_lot.xosc.mcap`
+- Has `osi3.SensorView` protobuf topic (processed by ASAM OSI converter extension)
+- Expected output: FrameTransforms with frames `ego_vehicle_bb_center`, `ego_vehicle_rear_axle`, `Global`
+
+### General Test MCAP
 - Size: 132MB, 880 chunks, ~20s duration, 219 topics
 - Image topics at 12.5fps (12.50 Hz, 250 messages)
 - Multiple topics at various frequencies (6.5-12.5 Hz range visible)
@@ -102,12 +217,19 @@ For creating or modifying visualization panels.
 | Path | Purpose |
 |------|---------|
 | `Trunk.toml` | Build config (target=web/index.html, watch=crates+web) |
+| `dev.sh` | Dev server startup script (port 8081) |
 | `web/index.html` | Entry HTML |
 | `web/style.css` | All CSS styles |
 | `crates/lichtblick-app/src/app.rs` | Root Leptos component |
 | `crates/lichtblick-app/src/player.rs` | MCAP player (most complex file) |
 | `crates/lichtblick-app/src/mcap_reader.rs` | MCAP format parser |
 | `crates/lichtblick-app/src/decoder.rs` | CDR/ROS1 message decoders |
+| `crates/lichtblick-app/src/extensions/manager.rs` | Extension JS bridge + converter pipeline |
+| `crates/lichtblick-app/src/extensions/storage.rs` | IndexedDB persistence |
+| `crates/lichtblick-app/src/extensions/loader.rs` | .foxe ZIP parser |
+| `crates/lichtblick-app/src/panels/three_dee_panel.rs` | 3D panel + TF + converter integration |
+| `crates/lichtblick-app/src/panels/tf_tree.rs` | TfTree, transforms, SLERP |
 | `crates/lichtblick-app/src/components/` | UI components (sidebar, toolbar, layout) |
 | `crates/lichtblick-app/src/panels/` | Panel implementations |
 | `crates/lichtblick-app/src/state/` | Global state (AppState, LayoutState) |
+| `lichtblick.asam-osi-converter-1.0.0/` | ASAM OSI converter extension package |

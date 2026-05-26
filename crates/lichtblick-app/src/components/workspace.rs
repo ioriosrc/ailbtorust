@@ -11,13 +11,16 @@ use crate::components::panel_layout::PanelLayout;
 use crate::components::playback_controls::PlaybackControls;
 use crate::components::data_source_dialog::{DataSourceDialog, create_player_from_summary};
 use crate::components::settings_dialog::SettingsDialog;
+use crate::extensions::manager::use_extension_state;
 use crate::mcap_reader;
 use crate::state::app_state::use_app_state;
+use wasm_bindgen_futures::JsFuture;
 
 /// Main workspace component containing the entire application layout.
 #[component]
 pub fn Workspace() -> impl IntoView {
     let state = use_app_state();
+    let ext_state = use_extension_state();
     let left_sidebar_open = state.left_sidebar_open;
     let right_sidebar_open = state.right_sidebar_open;
 
@@ -35,6 +38,36 @@ pub fn Workspace() -> impl IntoView {
                 if files.length() > 0 {
                     let file = files.get(0).unwrap();
                     let file_name = file.name();
+
+                    // Handle extension files (.foxe / .lbext)
+                    if file_name.ends_with(".foxe") || file_name.ends_with(".lbext") {
+                        log::info!("Installing extension: {}", file_name);
+                        let name_clone = file_name.clone();
+
+                        // Read file using Blob.arrayBuffer() Promise (no Closure::once needed)
+                        let promise = file.array_buffer();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match JsFuture::from(promise).await {
+                                Ok(array_buffer) => {
+                                    let uint8_array = js_sys::Uint8Array::new(&array_buffer);
+                                    let data = uint8_array.to_vec();
+
+                                    if name_clone.ends_with(".foxe") {
+                                        ext_state.install_foxe(data);
+                                    } else {
+                                        ext_state.status_message.set(Some(
+                                            "Native .lbext extensions not yet supported".to_string()
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to read extension file: {:?}", e);
+                                    ext_state.last_error.set(Some("Failed to read file".to_string()));
+                                }
+                            }
+                        });
+                        return;
+                    }
 
                     // Only accept .mcap and .bag files
                     if !file_name.ends_with(".mcap") && !file_name.ends_with(".bag") {

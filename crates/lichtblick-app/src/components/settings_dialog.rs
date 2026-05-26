@@ -3,7 +3,9 @@
 
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
+use crate::extensions::manager::use_extension_state;
 use crate::state::app_state::{use_app_state, TimeFormat};
 
 /// Settings dialog with tabs: General, Extensions, Experimental, About.
@@ -320,7 +322,9 @@ fn GeneralSettings() -> impl IntoView {
 /// Extensions settings tab content.
 #[component]
 fn ExtensionsSettings() -> impl IntoView {
+    let ext_state = use_extension_state();
     let search_query = RwSignal::new(String::new());
+    let drag_over = RwSignal::new(false);
 
     let on_search_input = move |ev: leptos::ev::Event| {
         if let Some(target) = ev.target() {
@@ -330,7 +334,8 @@ fn ExtensionsSettings() -> impl IntoView {
         }
     };
 
-    let extensions = vec![
+    // Default/built-in extensions (not uninstallable)
+    let default_extensions: Vec<(&str, &str, &str, &str)> = vec![
         ("URDF Viewer", "1.0.0", "Lichtblick", "Visualize URDF robot models"),
         ("ROS 2", "1.0.0", "Lichtblick", "ROS 2 connectivity and message support"),
         ("PointCloud", "1.0.0", "Lichtblick", "Point cloud visualization"),
@@ -338,7 +343,117 @@ fn ExtensionsSettings() -> impl IntoView {
         ("Map", "1.0.0", "Lichtblick", "Map tile visualization panel"),
     ];
 
+    // Drag-drop handlers for the install zone
+    let on_dragover = move |ev: web_sys::DragEvent| {
+        ev.prevent_default();
+        drag_over.set(true);
+    };
+    let on_dragleave = move |ev: web_sys::DragEvent| {
+        ev.prevent_default();
+        drag_over.set(false);
+    };
+    let on_drop = move |ev: web_sys::DragEvent| {
+        ev.prevent_default();
+        drag_over.set(false);
+        let dt = match ev.data_transfer() {
+            Some(dt) => dt,
+            None => return,
+        };
+        let files = match dt.files() {
+            Some(f) => f,
+            None => return,
+        };
+        for i in 0..files.length() {
+            let file = match files.get(i) {
+                Some(f) => f,
+                None => continue,
+            };
+            let name = file.name();
+            if !name.ends_with(".foxe") && !name.ends_with(".lbext") {
+                ext_state.last_error.set(Some(format!("Unsupported: {}. Expected .foxe", name)));
+                continue;
+            }
+            let ext_state_clone = ext_state;
+            let promise = file.array_buffer();
+            wasm_bindgen_futures::spawn_local(async move {
+                match wasm_bindgen_futures::JsFuture::from(promise).await {
+                    Ok(ab) => {
+                        let data = js_sys::Uint8Array::new(&ab).to_vec();
+                        ext_state_clone.install_foxe(data);
+                    }
+                    Err(_) => {
+                        ext_state_clone.last_error.set(Some("Failed to read file".into()));
+                    }
+                }
+            });
+        }
+    };
+
+    // File browser for install
+    let on_install_click = move |_: leptos::ev::MouseEvent| {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let input: web_sys::HtmlInputElement = document
+            .create_element("input").unwrap().unchecked_into();
+        input.set_type("file");
+        input.set_accept(".foxe,.lbext");
+        let ext_state_clone = ext_state;
+        let input_clone = input.clone();
+        let onchange = Closure::once(Box::new(move |_: web_sys::Event| {
+            let files = match input_clone.files() {
+                Some(f) => f,
+                None => return,
+            };
+            for i in 0..files.length() {
+                let file = match files.get(i) {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let name = file.name();
+                let es = ext_state_clone;
+                let promise = file.array_buffer();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match wasm_bindgen_futures::JsFuture::from(promise).await {
+                        Ok(ab) => {
+                            let data = js_sys::Uint8Array::new(&ab).to_vec();
+                            if name.ends_with(".foxe") { es.install_foxe(data); }
+                        }
+                        Err(_) => { es.last_error.set(Some("Failed to read file".into())); }
+                    }
+                });
+            }
+        }) as Box<dyn FnOnce(web_sys::Event)>);
+        input.set_onchange(Some(onchange.as_ref().unchecked_ref()));
+        onchange.forget();
+        input.click();
+    };
+
     view! {
+        // Install zone (compact)
+        <div
+            class="extensions-install-zone"
+            class:drag-over=move || drag_over.get()
+            on:dragover=on_dragover
+            on:dragleave=on_dragleave
+            on:drop=on_drop
+        >
+            <span class="extensions-install-label">{"Install extension: drag .foxe here or "}</span>
+            <button class="extensions-browse-btn" on:click=on_install_click>{"browse…"}</button>
+        </div>
+
+        // Status/error messages
+        {move || {
+            let error = ext_state.last_error.get();
+            let status = ext_state.status_message.get();
+            if let Some(err) = error {
+                Some(view! { <div class="extensions-msg extensions-msg-error">{err}</div> }.into_any())
+            } else if let Some(msg) = status {
+                Some(view! { <div class="extensions-msg extensions-msg-ok">{msg}</div> }.into_any())
+            } else {
+                None
+            }
+        }}
+
+        // Search
         <div class="extensions-search">
             <input
                 type="text"
@@ -348,21 +463,64 @@ fn ExtensionsSettings() -> impl IntoView {
                 prop:value=move || search_query.get()
             />
         </div>
+
+        // Extensions table
         <div class="extensions-table">
             <div class="extensions-table-header">
                 <span class="ext-col-name">{"Name"}</span>
                 <span class="ext-col-version">{"Version"}</span>
                 <span class="ext-col-publisher">{"Publisher"}</span>
                 <span class="ext-col-description">{"Description"}</span>
+                <span class="ext-col-actions">{""}</span>
             </div>
-            {extensions.into_iter().map(|(name, version, publisher, desc)| {
+
+            // Installed extensions (uninstallable)
+            {move || {
+                let installed = ext_state.installed.get();
+                let q = search_query.get().to_lowercase();
+                installed.into_iter().filter(move |ext| {
+                    q.is_empty()
+                        || ext.display_name.to_lowercase().contains(&q)
+                        || ext.publisher.to_lowercase().contains(&q)
+                        || ext.description.to_lowercase().contains(&q)
+                }).map(|ext| {
+                    let ext_id = ext.id.clone();
+                    let on_uninstall = move |_: leptos::ev::MouseEvent| {
+                        ext_state.uninstall(ext_id.clone());
+                    };
+                    view! {
+                        <div class="extensions-table-row extensions-row-installed">
+                            <span class="ext-col-name">{ext.display_name.clone()}</span>
+                            <span class="ext-col-version">{ext.version.clone()}</span>
+                            <span class="ext-col-publisher">{ext.publisher.clone()}</span>
+                            <span class="ext-col-description">{ext.description.clone()}</span>
+                            <span class="ext-col-actions">
+                                <button
+                                    class="ext-uninstall-btn"
+                                    on:click=on_uninstall
+                                    title="Uninstall"
+                                >{"✕"}</button>
+                            </span>
+                        </div>
+                    }
+                }).collect_view()
+            }}
+
+            // Default extensions (not uninstallable)
+            {default_extensions.into_iter().map(|(name, version, publisher, desc)| {
                 let name_s = name.to_string();
+                let desc_s = desc.to_string();
+                let pub_s = publisher.to_string();
                 let query = search_query;
                 view! {
-                    <div class="extensions-table-row"
+                    <div class="extensions-table-row extensions-row-default"
                         style:display=move || {
                             let q = query.get().to_lowercase();
-                            if q.is_empty() || name_s.to_lowercase().contains(&q) {
+                            if q.is_empty()
+                                || name_s.to_lowercase().contains(&q)
+                                || pub_s.to_lowercase().contains(&q)
+                                || desc_s.to_lowercase().contains(&q)
+                            {
                                 "grid"
                             } else {
                                 "none"
@@ -373,6 +531,7 @@ fn ExtensionsSettings() -> impl IntoView {
                         <span class="ext-col-version">{version}</span>
                         <span class="ext-col-publisher">{publisher}</span>
                         <span class="ext-col-description">{desc}</span>
+                        <span class="ext-col-actions ext-default-badge">{"built-in"}</span>
                     </div>
                 }
             }).collect::<Vec<_>>()}

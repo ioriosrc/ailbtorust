@@ -8,15 +8,19 @@ Lichtblick is a robotics data visualization tool supporting MCAP files with lazy
 
 ### Working Features
 - **MCAP lazy playback** — instant file open (summary-only), chunks loaded on demand
-- **4-tab sidebar** — Panel settings, Topics (with Hz/count), Alerts (>60Hz), Layouts
+- **5-tab sidebar** — Panel settings, Topics (with Hz/count), Alerts (>60Hz), Layouts, Extensions
 - **Stable topic stats** — Hz and message counts from MCAP Statistics record (never oscillate)
 - **Playback controls** — Play/pause, speed (0.1x–3x), seek via progress bar
 - **Performance alerts** — Warns when topics exceed 60Hz (matches original Lichtblick)
 - **Layout system** — Split panels, create/import/export/load from localStorage
 - **Image panel** — JPEG/PNG/H.264 via Blob URLs (browser-decoded)
-- **3D panel** — WebGL point clouds, TF transforms, markers
-- **Raw Messages panel** — JSON tree view of decoded CDR/ROS1 messages
+- **3D panel** — WebGL2 point clouds, TF transforms, coordinate frames, SceneUpdate entities (cubes/lines)
+- **Raw Messages panel** — JSON tree view of decoded CDR/ROS1/Protobuf messages
 - **Additional panels** — Log, Plot, DataSourceInfo, Diagnostics, StateTransitions, Teleop
+- **Extension system** — Install .foxe extensions, converter pipeline for custom message types
+- **TF tree** — Full transform tree with SLERP interpolation, frame hierarchy, Display Frame selector
+- **Protobuf support** — prost-reflect DynamicMessage decode, FileDescriptorSet schema registration
+- **ASAM OSI converter** — Extension converts osi3.SensorView → FrameTransforms + SceneUpdate (vehicles, lanes, signs)
 
 ### Performance Characteristics
 - File open: ~50ms (reads summary only, 132MB MCAP)
@@ -24,6 +28,7 @@ Lichtblick is a robotics data visualization tool supporting MCAP files with lazy
 - Memory: 100MB chunk cache cap with LRU eviction
 - Chunk prefetch: 3s ahead, batch of 2 (keeps main thread responsive)
 - Seek: Generation-counter invalidation of stale async loads
+- Converter pipeline: timestamp dedup (skip repeated log_time_ns), failed schema tracking
 
 ## Architecture
 
@@ -32,9 +37,16 @@ crates/
 ├── lichtblick-app         # Web UI (Leptos components, player, state)
 │   ├── src/player.rs      # MCAP lazy player (most complex file)
 │   ├── src/mcap_reader.rs # MCAP format parser
-│   ├── src/decoder.rs     # CDR/ROS1 message decoders
+│   ├── src/decoder.rs     # CDR/ROS1/Protobuf message decoders
+│   ├── src/extensions/    # Extension system
+│   │   ├── manager.rs     # JS bridge, converter registry, protobufjs init
+│   │   ├── storage.rs     # IndexedDB persistence
+│   │   ├── loader.rs      # .foxe ZIP parser (Store + Deflate)
+│   │   └── types.rs       # ExtensionInfo, StoredExtension
 │   ├── src/components/    # Sidebar, toolbar, panel layout
 │   ├── src/panels/        # Panel implementations
+│   │   ├── three_dee_panel.rs  # WebGL2 3D + TF + converter integration
+│   │   └── tf_tree.rs     # TfTree, transforms, SLERP interpolation
 │   └── src/state/         # AppState, LayoutState (reactive signals)
 ├── lichtblick-core        # Types: Time, Topic, MessageEvent, PlayerState
 ├── lichtblick-messages    # Message path parsing/evaluation
@@ -53,11 +65,64 @@ File.slice() → FileReader → decompress (LZ4/zstd) → parse messages → chu
                               panels ← frame_tick ← tick_and_reschedule ← latest_messages
 ```
 
+### Extension Converter Pipeline
+
+```
+MCAP message (binary) → prost-reflect DynamicMessage decode → dynamic_message_to_js() → JsValue
+                                                                                            ↓
+                    converter(message, messageEvent, globalVariables, context)  ← 4-arg calling convention
+                                    ↓                                    ↓
+            foxglove.FrameTransforms                        foxglove.SceneUpdate
+                    ↓                                              ↓
+    parse_js_frame_transform → TfTree              parse_scene_update_result → SCENE_ENTITIES
+                    ↓                                              ↓
+        Display Frame dropdown                      WebGL2 cubes + lines rendering
+```
+
 Key design decisions:
 - **Lazy loading**: Only summary is read on open. Chunks are fetched via browser File API.
 - **Generation counter**: Every seek increments a counter. Stale async loads are discarded.
 - **Collect-then-apply**: Avoids RefCell borrow conflicts in the playback loop.
 - **Stable stats**: Topic Hz/count comes from MCAP footer Statistics record, not runtime counting.
+- **Rust-native protobuf**: Uses `prost-reflect` for decoding (not protobufjs). DescriptorPool compiled from MCAP schema's FileDescriptorSet.
+- **Failed schema tracking**: Permanently broken schemas are recorded and never retried.
+- **Timestamp dedup**: Converter pipeline skips messages with same log_time_ns as previously processed.
+- **4-arg converter call**: Matches real Lichtblick's `messageProcessing.ts` — first arg is raw decoded message.
+
+### Known Gaps / TODO
+- **Coordinate conversion**: No Z-up (ROS/OSI) → Y-up (WebGL) rotation applied yet. Cubes/lines may appear at wrong orientation.
+- **SceneUpdate deletions**: Not implemented. Entities accumulate but are never deleted.
+- **Arrows/spheres/cylinders/triangles/models**: Only cubes and lines primitives are extracted and rendered.
+- **Per-vertex line colors**: Only uniform color per line is supported (not per-point colors array).
+
+## Extension System
+
+The extension system supports `.foxe` format packages (ZIP archives) containing:
+- `package.json` — Extension metadata (id, name, publisher, contributes)
+- `dist/extension.js` — Bundled JavaScript extension code
+- `README.md`, `CHANGELOG.md` — Optional documentation
+
+### How Extensions Work
+1. **Install**: Drag-and-drop .foxe file → ZIP parsed → stored in IndexedDB
+2. **Activate**: JS source executed via `new Function()`. Extension calls `registerMessageConverter`
+3. **Registry**: Converter functions stored in `globalThis.__extensionConverters[fromSchemaName]`
+4. **Runtime**: For each message matching a registered schema:
+   - Binary data → `prost-reflect::DynamicMessage::decode()` → `dynamic_message_to_js()` → JsValue
+   - JsValue passed to converter as first arg: `converter(msg, event, globals, context)`
+   - FrameTransforms output → parsed → inserted into TfTree
+   - SceneUpdate output → cubes/lines extracted → stored in SCENE_ENTITIES → rendered in WebGL2
+
+### Protobuf Decoding (Rust-native)
+- **prost-reflect 0.14.7**: Decodes protobuf using compiled DescriptorPool (from MCAP schema FileDescriptorSet)
+- **Custom JS conversion** (`dynamic_message_to_js`): snake_case fields, all defaults emitted, longs→f64
+- **Timestamp handling**: `google.protobuf.Timestamp` converted to `{sec, nsec}` (not `{seconds, nanos}`)
+- **Pool cache**: `PROTO_POOLS` thread-local HashMap<schema_name, DescriptorPool>
+
+### Installed Extension
+- **ASAM OSI Converter** (`lichtblick.asam-osi-converter-1.0.0`):
+  - Converts `osi3.SensorView` → `foxglove.FrameTransforms` (ego_vehicle_bb_center, ego_vehicle_rear_axle, Global)
+  - Converts `osi3.SensorView` → `foxglove.SceneUpdate` (vehicles/cubes, lanes/lines, traffic signs/lights)
+  - Converts `osi3.GroundTruth` → `foxglove.FrameTransforms` + `foxglove.SceneUpdate`
 
 ## Prerequisites
 
@@ -81,15 +146,16 @@ Key design decisions:
 ### Run in development mode (with hot reload):
 
 ```bash
-# Must run from project root directory!
-trunk serve --port 8081 --open
+cd /path/to/ailbtorust && bash dev.sh
 ```
 
-This will:
-- Compile the Rust code to WASM
-- Bundle and serve the web app
-- Open your browser at `http://localhost:8081`
-- Hot-reload on source changes
+This starts the dev server on port 8081 with file watching.
+
+### Build check (fast, no serve):
+
+```bash
+cargo check --target wasm32-unknown-unknown
+```
 
 ### Build for production:
 
@@ -98,6 +164,14 @@ trunk build --release
 ```
 
 Output will be in the `dist/` directory.
+
+## Testing with MCAP Files
+
+1. Start dev server: `bash dev.sh`
+2. Open browser at `http://localhost:8081`
+3. Drag-and-drop an MCAP file onto the app
+4. For OSI extensions: use an MCAP with `osi3.SensorView` topic (e.g., SanDiego scenario file)
+5. Open 3D panel → Display Frame dropdown should show frames from TF tree + extension converters
 
 ### Run tests:
 
