@@ -5,6 +5,7 @@ set -e
 
 PORT=${1:-8081}
 PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJ_DIR"
 DIST_DIR="$PROJ_DIR/dist"
 CRATE="lichtblick-app"
 WASM_TARGET="wasm32-unknown-unknown"

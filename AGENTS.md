@@ -70,7 +70,7 @@ For the extension system: loading, activation, converter pipeline, SceneUpdate p
 - **Calling convention** (matches real Lichtblick `messageProcessing.ts`):
   ```javascript
   converter(message, messageEvent, globalVariables, context)
-  // message = raw decoded proto object (snake_case fields)
+  // message = raw decoded proto object (MUST have camelCase fields)
   // messageEvent = { topic, schemaName, receiveTime, message, sizeInBytes }
   // globalVariables = undefined (not yet implemented)
   // context = { emitAlert: () => {} }
@@ -83,7 +83,8 @@ For the extension system: loading, activation, converter pipeline, SceneUpdate p
 **Protobuf decoding (Rust-native):**
 - Uses `prost-reflect` (NOT protobufjs) to decode binary protobuf messages
 - `DynamicMessage::decode(descriptor, bytes)` → `dynamic_message_to_js()` → JsValue
-- Custom conversion: snake_case fields, longs→f64, Timestamp→{sec,nsec}, all defaults emitted
+- **Casing discovery**: Original Lichtblick uses `protobufjs` default `toObject()` options which convert protobuf field names from `snake_case` to `camelCase`. Therefore, the JS extension's converter expects all message fields to be in `camelCase`. `dynamic_message_to_js()` must map names to `camelCase` (e.g., converting `ego_vehicle` to `egoVehicle`).
+- Custom conversion: camelCase fields, longs→f64, Timestamp→{sec,nsec}, all defaults emitted
 - `PROTO_POOLS` thread-local: caches compiled DescriptorPools per schema
 - `FAILED_SCHEMAS` thread-local: permanently failed schemas never retried
 

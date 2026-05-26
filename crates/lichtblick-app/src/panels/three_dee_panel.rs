@@ -166,12 +166,16 @@ impl Mat4 {
 pub struct OrbitCamera {
     pub target: Vec3,
     pub distance: f32,
-    pub azimuth: f32,   // radians around Y axis
-    pub elevation: f32, // radians up from XZ plane
+    pub azimuth: f32,   // Azimuth ativo usado na renderização
+    pub elevation: f32, // Elevation ativo usado na renderização
     pub fov_y: f32,
     pub perspective: bool,
     pub near: f32,
     pub far: f32,
+    // Controle manual do usuário (mouse e scroll)
+    pub user_target: Vec3,
+    pub user_azimuth: f32,
+    pub user_elevation: f32,
 }
 
 impl OrbitCamera {
@@ -185,6 +189,9 @@ impl OrbitCamera {
             perspective: true,
             near: 0.5,
             far: 5000.0,
+            user_target: Vec3::new(0.0, 0.0, 0.0),
+            user_azimuth: std::f32::consts::FRAC_PI_4,
+            user_elevation: std::f32::consts::FRAC_PI_6,
         }
     }
 
@@ -208,9 +215,9 @@ impl OrbitCamera {
     }
 
     pub fn rotate(&mut self, dx: f32, dy: f32) {
-        self.azimuth -= dx * 0.01;
-        self.elevation += dy * 0.01;
-        self.elevation = self.elevation.clamp(-1.4, 1.4); // ~±80°
+        self.user_azimuth -= dx * 0.01;
+        self.user_elevation += dy * 0.01;
+        self.user_elevation = self.user_elevation.clamp(-1.4, 1.4); // ~±80°
     }
 
     pub fn zoom(&mut self, delta: f32) {
@@ -222,7 +229,7 @@ impl OrbitCamera {
         let right = Vec3::new(self.azimuth.cos(), 0.0, -self.azimuth.sin());
         let up = Vec3::new(0.0, 1.0, 0.0);
         let scale = self.distance * 0.002;
-        self.target = self.target.add(&right.scale(-dx * scale)).add(&up.scale(dy * scale));
+        self.user_target = self.user_target.add(&right.scale(-dx * scale)).add(&up.scale(dy * scale));
     }
 }
 
@@ -801,35 +808,6 @@ impl SceneState {
     }
 
     /// Regenerate grid geometry and re-upload to GPU buffers (legacy single grid).
-    fn update_grid(&mut self, size: f64, divisions: u32) {
-        if let Some(g) = self.grids.first_mut() {
-            let half_size = size as i32;
-            let spacing = size as f32 / divisions.max(1) as f32;
-            let grid_color = parse_hex_color(&g.color);
-            let (grid_pos, grid_col) = generate_grid_and_axes(half_size, spacing, grid_color);
-            g.vertex_count = (grid_pos.len() / 3) as i32;
-            g.size = size;
-            g.divisions = divisions;
-
-            let gl = &self.gl;
-            gl.bind_vertex_array(Some(&g.vao));
-
-            gl.bind_buffer(GL::ARRAY_BUFFER, Some(&g.pos_buffer));
-            unsafe {
-                let array = js_sys::Float32Array::view(&grid_pos);
-                gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
-            }
-
-            gl.bind_buffer(GL::ARRAY_BUFFER, Some(&g.col_buffer));
-            unsafe {
-                let array = js_sys::Float32Array::view(&grid_col);
-                gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::DYNAMIC_DRAW);
-            }
-
-            gl.bind_vertex_array(None);
-        }
-    }
-
     fn render(&mut self) {
         let gl = &self.gl;
 
@@ -856,27 +834,58 @@ impl SceneState {
         let follow_mode = self.follow_mode.clone();
         let display_frame = self.display_frame.clone();
 
+        // Start from user-controlled values
+        self.camera.azimuth = self.camera.user_azimuth;
+        self.camera.elevation = self.camera.user_elevation;
+        self.camera.target = self.camera.user_target;
+
         if !display_frame.is_empty() && follow_mode != "fixed" {
             TF_STATE.with(|tree| {
                 let tf = tree.borrow();
-                // Look up display frame relative to root (get its world pose)
-                if let Some(root_frames) = tf.frames().first().cloned() {
-                    if let Some(transform) = tf.lookup(&root_frames, &display_frame, current_time_ns) {
-                        let tx = transform.translation.x as f32;
-                        let ty = transform.translation.y as f32;
-                        let tz = transform.translation.z as f32;
+                if let Some(world_frame) = tf.frames().first().cloned() {
+                    if let Some(transform) = tf.lookup(&world_frame, &display_frame, current_time_ns) {
+                        let q = &transform.rotation;
+                        let yaw = (2.0 * (q.w * q.z + q.x * q.y))
+                            .atan2(1.0 - 2.0 * (q.y * q.y + q.z * q.z)) as f32;
 
                         if follow_mode == "pose" {
-                            // Follow both position and orientation
-                            self.camera.target = Vec3::new(tx, ty, tz);
-                            // Extract yaw from quaternion and adjust azimuth
-                            let q = &transform.rotation;
+                            // Pose: camera focuses on vehicle (origin in local coords) + user pan.
+                            // Camera rotates with the vehicle (user azimuth is relative to vehicle heading).
+                        } else if follow_mode == "position" {
+                            // Position: camera focuses on vehicle (origin) + user pan.
+                            // Camera maintains global orientation (subtract vehicle yaw).
+                            self.camera.azimuth = self.camera.user_azimuth - yaw;
+                        }
+                    }
+                }
+            });
+        } else if !display_frame.is_empty() && follow_mode == "fixed" {
+            // Fixed: camera is static in world space
+            TF_STATE.with(|tree| {
+                let tf = tree.borrow();
+                if let Some(world_frame) = tf.frames().first().cloned() {
+                    // Transform user target from world space to display frame local space
+                    if let Some(t_world_to_display) = tf.lookup(&display_frame, &world_frame, current_time_ns) {
+                        let world_target = super::tf_tree::Transform {
+                            translation: super::tf_tree::Vec3d {
+                                x: self.camera.user_target.x as f64,
+                                y: self.camera.user_target.y as f64,
+                                z: self.camera.user_target.z as f64,
+                            },
+                            rotation: super::tf_tree::Quaternion::identity(),
+                        };
+                        let local_target = t_world_to_display.compose(&world_target);
+                        self.camera.target = Vec3::new(
+                            local_target.translation.x as f32,
+                            local_target.translation.y as f32,
+                            local_target.translation.z as f32,
+                        );
+                        // Adjust azimuth to compensate for frame rotation (keep static in world)
+                        if let Some(t_display_to_world) = tf.lookup(&world_frame, &display_frame, current_time_ns) {
+                            let q = &t_display_to_world.rotation;
                             let yaw = (2.0 * (q.w * q.z + q.x * q.y))
                                 .atan2(1.0 - 2.0 * (q.y * q.y + q.z * q.z)) as f32;
-                            self.camera.azimuth = std::f32::consts::FRAC_PI_4 - yaw;
-                        } else if follow_mode == "position" {
-                            // Follow position only, keep user orientation
-                            self.camera.target = Vec3::new(tx, ty, tz);
+                            self.camera.azimuth = self.camera.user_azimuth - yaw;
                         }
                     }
                 }
@@ -1911,6 +1920,7 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             s.camera.fov_y = (cfg.view.fovy as f32).to_radians();
             s.camera.near = cfg.view.near as f32;
             s.camera.far = cfg.view.far as f32;
+            s.camera.distance = cfg.view.distance as f32;
 
             // Follow mode
             s.follow_mode = cfg.follow_mode.clone();

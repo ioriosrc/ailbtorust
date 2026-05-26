@@ -1227,6 +1227,7 @@ dependencies = [
  "log",
  "lz4_flex",
  "mcap",
+ "prost-reflect",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

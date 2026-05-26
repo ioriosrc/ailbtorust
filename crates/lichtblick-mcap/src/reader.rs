@@ -253,3 +253,104 @@ fn deserialize_message(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Read;
+
+    #[test]
+    fn test_debug_osi() {
+        println!("--- DEBUG OSI TEST START ---");
+        let path = "/Users/CTW03722/Downloads/SanDiego_san_diego_sc7_urban_splits_and_parking_lot.xosc.mcap";
+        let mut file = File::open(path).expect("Failed to open MCAP");
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).expect("Failed to read MCAP");
+
+        let reader = McapReader::new(data);
+        let init_result = reader.initialize().expect("Failed to initialize MCAP");
+        println!("Topics count: {}", init_result.topics.len());
+
+        let target_topic = "ConvertedTrace";
+        let target_schema = "osi3.SensorView";
+
+        // Find the schema bytes
+        let mut schema_bytes = None;
+        for topic in &init_result.topics {
+            if topic.name == target_topic {
+                println!("Found topic: {} with schema: {}", topic.name, topic.schema_name);
+            }
+        }
+
+        // Get schema from the summary
+        let summary = mcap::Summary::read(&reader.data).unwrap().unwrap();
+        for schema in summary.schemas.values() {
+            if schema.name == target_schema {
+                println!("Found schema in summary: {}, data length: {}", schema.name, schema.data.len());
+                schema_bytes = Some(schema.data.clone());
+            }
+        }
+
+        let schema_data = schema_bytes.expect("osi3.SensorView schema not found in MCAP");
+
+        // Try compiling the DescriptorPool
+        println!("Compiling DescriptorPool...");
+        match prost_reflect::DescriptorPool::decode(schema_data.as_ref()) {
+            Ok(pool) => {
+                let message_desc = pool.get_message_by_name(target_schema);
+                match message_desc {
+                    Some(desc) => {
+                        println!("Message descriptor found: {}", desc.full_name());
+                        
+                        // Read messages and decode the first one on the target topic
+                        let messages = reader.read_messages(&[target_topic.to_string()], init_result.start_time, init_result.end_time).unwrap();
+                        println!("Total messages on target topic: {}", messages.len());
+                        if let Some(msg) = messages.first() {
+                            println!("Reading first message: time_ns={}, size={}", msg.receive_time.to_nanos(), msg.size_in_bytes);
+                            
+                            // Try decoding the protobuf payload
+                            // In reader.rs, msg.message contains a serde_json::Value representing the deserialized message.
+                            // But msg.message for binary encodings is just a JSON containing base64 data!
+                            // Let's get the raw bytes from base64
+                            let raw_base64 = msg.message.get("__data_base64").and_then(|v| v.as_str()).unwrap();
+                            use base64::Engine as _;
+                            let raw_bytes = base64::engine::general_purpose::STANDARD.decode(raw_base64).unwrap();
+                            
+                            match prost_reflect::DynamicMessage::decode(desc, raw_bytes.as_slice()) {
+                                Ok(dynamic_msg) => {
+                                    println!("DynamicMessage decoded successfully!");
+                                    
+                                    // Print fields of SensorView
+                                    use prost_reflect::ReflectMessage;
+                                    let sensor_view_desc = dynamic_msg.descriptor();
+                                    for field in sensor_view_desc.fields() {
+                                        let value = dynamic_msg.get_field(&field);
+                                        if value.is_default(&field.kind()) {
+                                            continue;
+                                        }
+                                        println!("  Field: {} -> {:?}", field.name(), value);
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("FAILED to decode DynamicMessage: {}", e);
+                                }
+                            }
+                        } else {
+                            println!("No messages found on target topic.");
+                        }
+                    }
+                    None => {
+                        println!("Message descriptor NOT found for: {}", target_schema);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("FAILED to compile DescriptorPool: {}", e);
+            }
+        }
+        panic!("Force test failure to print output");
+        println!("--- DEBUG OSI TEST END ---");
+    }
+}
+

@@ -90,6 +90,7 @@ Key design decisions:
 - **4-arg converter call**: Matches real Lichtblick's `messageProcessing.ts` — first arg is raw decoded message.
 
 ### Known Gaps / TODO
+- **Protobuf Casing (snake_case vs. camelCase)**: The Rust dynamic message JS serializer outputs `snake_case` keys, but the JS extensions expect `camelCase` keys. We need to map keys to `camelCase` in `dynamic_message_to_js` to make the JS converters receive valid properties.
 - **Coordinate conversion**: No Z-up (ROS/OSI) → Y-up (WebGL) rotation applied yet. Cubes/lines may appear at wrong orientation.
 - **SceneUpdate deletions**: Not implemented. Entities accumulate but are never deleted.
 - **Arrows/spheres/cylinders/triangles/models**: Only cubes and lines primitives are extracted and rendered.

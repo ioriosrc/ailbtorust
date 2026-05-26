@@ -13,3 +13,5 @@ thiserror = { workspace = true }
 base64 = { workspace = true }
 lz4_flex = { workspace = true }
 log = { workspace = true }
+prost-reflect = { workspace = true }
+

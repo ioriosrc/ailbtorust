@@ -32,14 +32,15 @@ This document contains a high-level review of the `ailbtorust` repository, outli
 2. **TF Tree & Coordinate Frames**: Full transform hierarchy with SLERP interpolation, time-based lookup, Display Frame selector. Sources: TF CDR messages + extension converters.
 3. **Layout Serialization**: Save, export, import, and share layout JSON (localStorage + file download). Format matches Lichtblick original.
 4. **Dynamic Protobuf Deserialization**: FileDescriptorSet schemas decoded at runtime via protobufjs (CDN). Supports any protobuf message type (OSI, custom messages).
+5. **3D Panel Settings & Follow Modes**: Fully ported all original 3D settings groups (Frame selection, Camera follow modes `pose`/`position`/`fixed`, Scene colors, individual TF offsets and visibility, Topic filters/toggles, Grids, and Click-to-Publish coordinates publishing).
 
 ### Partially Implemented
 1. **Advanced 3D Rendering**:
-   - Has: PointCloud2, grid, axes, basic frame visualization
-   - Missing: URDF robot models, mesh markers (STL/DAE), text markers, arrow markers, complex scene graph
+   - Has: PointCloud2, grid, axes, basic frame visualization, SceneUpdate cubes and lines.
+   - Missing: URDF robot models, mesh markers (STL/DAE), text markers, arrow markers, complex scene graph.
 2. **Dynamic Type Deserialization**:
-   - Has: CDR (ROS2), ROS1 serialization, Protobuf (binary + schema-based with field numbers)
-   - Missing: FlatBuffers support, JSON Schema support
+   - Has: CDR (ROS2), ROS1 serialization, Protobuf (binary + schema-based with field numbers).
+   - Missing: FlatBuffers support, JSON Schema support.
 
 ### Not Yet Implemented
 1. **Custom JS Panels**: Extensions can register panels but rendering them in WASM requires embedded JS runtime or iframe approach.
@@ -47,6 +48,16 @@ This document contains a high-level review of the `ailbtorust` repository, outli
 3. **WebRTC Support**: Video streaming from ROS cameras.
 4. **WebSocket Live Data**: Real-time connection to running robots (trait exists, implementation pending).
 5. **Message Path Evaluation for Plot**: Arbitrary nested field access like `msg.pose.position.x` for Plot panel.
+
+## 5. Critical Issues / Next Goals
+
+### Protobuf Casing Mismatch (Silent 3D Rendering Failure)
+- **Problem**: The original NodeJS Lichtblick uses `protobufjs` to deserialize protobuf messages into JS objects, which by default converts `snake_case` keys to `camelCase`. JS extensions (like the ASAM OSI converter) expect message fields in `camelCase`. In contrast, the Rust port's `dynamic_message_to_js` maps keys as-is (`snake_case`), causing JS converters to read `undefined` and output empty transforms/scene updates.
+- **Fix**: Update the Rust `dynamic_message_to_js` serialization helper to convert all field names from `snake_case` to `camelCase`.
+
+### Z-up to Y-up Coordinate Conversion
+- **Problem**: Robotics data uses ENU Z-up (X=forward, Y=left, Z=up), while WebGL defaults to Y-up (X=right, Y=up, Z=forward). 
+- **Fix**: Apply a global coordinate transform or a pre-transformation matrix to orient the view properly.
 
 ## Summary
 The `ailbtorust` project has a solid foundation using Leptos with a working extension system, TF tree, and protobuf converter pipeline. The primary focus for future development should be on **expanding the 3D renderer** (URDF, mesh markers, full scene graph), **implementing message path evaluation** (for Plot panel field access like `msg.pose.position.x`), and **adding WebSocket live data** to support real-time robot connections. The extension system architecture (JS bridge via inline_js + protobufjs CDN) is proven and can be extended for additional converter output types beyond FrameTransforms.
