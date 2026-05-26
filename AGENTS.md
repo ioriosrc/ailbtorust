@@ -4,21 +4,150 @@
 
 This is a Rust/WASM port of [Lichtblick](https://github.com/lichtblick-suite/lichtblick) — a robotics data visualization web app. It uses **Leptos 0.7.8** for reactive UI, compiled to `wasm32-unknown-unknown`, served via **Trunk**.
 
-The reference implementation is the original Lichtblick TypeScript/React app. When in doubt about behavior, match the original.
+The reference implementation is the original Lichtblick TypeScript/React app (port 8080). When in doubt about behavior, match the original.
+
+---
+
+## Multi-Agent Workflow
+
+All development follows a **Code → Review → QA** pipeline:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     DEVELOPMENT PIPELINE                      │
+├──────────┬──────────────┬──────────────┬────────────────────┤
+│  CODE    │   REVIEW     │     QA       │   COMPARE          │
+│  Agent   │   Agent      │   Agent      │   Agent            │
+├──────────┼──────────────┼──────────────┼────────────────────┤
+│ Implement│ Best practice │ Playwright  │ Visual diff        │
+│ features │ Performance  │ Lint/Format  │ Console debug      │
+│ Fix bugs │ Security     │ Integration  │ Node vs Rust       │
+│          │ Idiomatic    │ E2E tests    │ Variable compare   │
+│          │ code review  │ Screenshot   │                    │
+└──────────┴──────────────┴──────────────┴────────────────────┘
+         │                    │                    │
+         └─── Loop back if issues found ──────────┘
+```
+
+### Flow:
+1. **Code Agent** implements feature/fix
+2. **Review Agent** evaluates code quality, performance, security
+3. **QA Agent** runs lint, format, integration, E2E tests
+4. **Compare Agent** compares Node.js (8080) vs Rust (8081) behavior
+5. If issues found → back to Code Agent
 
 ---
 
 ## Agent Roles
 
-### Default Agent
+### Code Agent (Default)
 General-purpose development. Handles feature implementation, bug fixes, refactoring.
 
 **Key knowledge:**
 - Build check: `cargo check --target wasm32-unknown-unknown`
+- Full build: `cargo build --target wasm32-unknown-unknown && wasm-bindgen target/wasm32-unknown-unknown/debug/lichtblick_app.wasm --out-dir dist --target web --no-typescript`
 - Dev server: `cd /Users/CTW03722/git/ailbtorust && bash dev.sh` (port 8081)
+- Node.js reference: `cd /Users/CTW03722/git/lichtblick && yarn web:serve` (port 8080)
 - Main app crate: `crates/lichtblick-app/`
 - CSS: `web/style.css` (no CSS framework, manual styles)
 - Extensions: `lichtblick.asam-osi-converter-1.0.0/` (installed via IndexedDB)
+
+**Responsibilities:**
+- Feature implementation matching Node.js Lichtblick behavior
+- Bug fixes identified by QA or Review agents
+- Performance optimizations recommended by Review agent
+- Always run `cargo check` before marking work as done
+
+### Review Agent
+Evaluates code for best practices, performance, security, and idiomatic Rust.
+
+**Focus areas:**
+- Rust idioms (ownership, lifetimes, error handling)
+- WebGL2 best practices (buffer management, draw call batching)
+- WASM-specific performance (minimize JS interop, avoid unnecessary clones)
+- Security (no unsafe without justification, input validation at boundaries)
+- Memory management (Rc/RefCell patterns, leak prevention)
+- Signal/reactive patterns (Leptos best practices, avoid unnecessary reactivity)
+
+**Checklist:**
+- [ ] No unnecessary allocations in hot paths (render loop, frame tick)
+- [ ] All `unsafe` blocks have safety comments
+- [ ] Thread-local access patterns are correct (no nested borrows)
+- [ ] Error handling: `Result` propagation, not `.unwrap()` in production code
+- [ ] WebGL state machine: proper bind/unbind, no state leaks
+- [ ] No hardcoded values that should be configurable
+- [ ] Consistent naming conventions (snake_case Rust, camelCase for JS interop)
+
+### QA Agent
+Runs all testing: lint, format, integration, E2E (Playwright), screenshot comparison.
+
+**Test commands:**
+```bash
+# Lint
+cargo clippy --target wasm32-unknown-unknown -- -D warnings
+
+# Format check
+cargo fmt --check
+
+# Build (compile check)
+cargo build --target wasm32-unknown-unknown
+
+# E2E tests (Playwright)
+cd e2e && npx playwright test
+
+# E2E with visual comparison
+cd e2e && npx playwright test --project=compare
+```
+
+**Test categories:**
+1. **Lint & Format** — `cargo clippy`, `cargo fmt --check`
+2. **Build** — `cargo build --target wasm32-unknown-unknown` (zero errors)
+3. **Integration** — Verify extension loading, MCAP parsing, TF tree correctness
+4. **E2E (Playwright)** — Full browser tests against running app
+5. **Visual comparison** — Screenshot Rust (8081) vs Node.js (8080), pixel diff
+6. **Console debug** — Inject `console.log` in both to compare variables/outputs
+
+**Playwright setup:**
+- Config: `e2e/playwright.config.ts`
+- Tests: `e2e/tests/`
+- Fixtures: `e2e/fixtures/`
+- Reports: `e2e/reports/`
+
+**Key test scenarios:**
+- MCAP file load and playback
+- 3D panel renders vehicles as solid cubes
+- TF transforms update correctly during playback
+- Camera follow mode tracks ego vehicle
+- Sidebar Transforms section matches Node.js
+- Extension installs and converts messages
+
+### Compare Agent
+Compares Node.js Lichtblick (8080) and Rust Lichtblick (8081) side-by-side.
+
+**Methodology:**
+1. Open same MCAP file in both
+2. Navigate to same timestamp
+3. Screenshot both 3D panels
+4. Compare pixel differences
+5. Inject `console.log` to dump internal state variables
+6. Report discrepancies for Code Agent to fix
+
+**Comparison targets:**
+- Camera position/orientation
+- Entity rendering (solid vs wireframe, colors, positions)
+- TF frame values (translation, rotation)
+- Sidebar settings and UI elements
+- Playback timing accuracy
+- Follow mode behavior
+
+**Debug injection patterns:**
+```javascript
+// In Rust (via console_log! macro or web_sys::console)
+console_log!("camera: dist={} az={} el={}", distance, azimuth, elevation);
+
+// In Node.js (browser console)
+// Access React fiber state or foxglove internals
+```
 
 ### Performance Agent
 For diagnosing and fixing playback stuttering, frame drops, memory issues.

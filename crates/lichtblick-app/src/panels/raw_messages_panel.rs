@@ -188,7 +188,7 @@ pub fn RawMessagesPanel(#[prop(into)] topic: String, node_id: NodeId) -> impl In
     }
 }
 
-/// JSON tree display component (recursive).
+/// JSON tree display component — collapsed by default, lazy render on expand.
 #[component]
 fn JsonTree(value: serde_json::Value, indent: usize) -> impl IntoView {
     let padding = format!("padding-left: {}px", indent * 16);
@@ -201,11 +201,9 @@ fn JsonTree(value: serde_json::Value, indent: usize) -> impl IntoView {
                     {entries.into_iter().map(|(key, val)| {
                         let is_nested = matches!(&val, serde_json::Value::Object(_) | serde_json::Value::Array(_));
                         if is_nested {
+                            let summary = summarize_value(&val);
                             view! {
-                                <div class="json-field">
-                                    <span class="json-key">{format!("{}:", key)}</span>
-                                    <JsonTree value=val indent=indent+1 />
-                                </div>
+                                <JsonCollapsible key=key summary=summary value=val indent=indent+1 />
                             }.into_any()
                         } else {
                             let display = format_json_value(&val);
@@ -223,7 +221,7 @@ fn JsonTree(value: serde_json::Value, indent: usize) -> impl IntoView {
         serde_json::Value::Array(items) => {
             if items.is_empty() {
                 view! {
-                    <span class="json-value" style=padding>"[]"</span>
+                    <span class="json-value" style=padding>"[]  0 items"</span>
                 }.into_any()
             } else if items.len() <= 8 && items.iter().all(|v| !v.is_object() && !v.is_array()) {
                 // Short primitive array - display inline
@@ -232,14 +230,25 @@ fn JsonTree(value: serde_json::Value, indent: usize) -> impl IntoView {
                     <span class="json-value" style=padding>{display}</span>
                 }.into_any()
             } else {
+                let count = items.len();
                 view! {
                     <div class="json-array" style=padding>
-                        {items.into_iter().enumerate().map(|(i, val)| {
-                            view! {
-                                <div class="json-array-item">
-                                    <span class="json-index">{format!("[{}]: ", i)}</span>
-                                    <JsonTree value=val indent=indent+1 />
-                                </div>
+                        {items.into_iter().enumerate().map(move |(i, val)| {
+                            let is_nested = matches!(&val, serde_json::Value::Object(_) | serde_json::Value::Array(_));
+                            if is_nested {
+                                let summary = summarize_value(&val);
+                                let key = format!("[{}]", i);
+                                view! {
+                                    <JsonCollapsible key=key summary=summary value=val indent=0 />
+                                }.into_any()
+                            } else {
+                                let display = format_json_value(&val);
+                                view! {
+                                    <div class="json-field-inline">
+                                        <span class="json-index">{format!("[{}]: ", i)}</span>
+                                        <span class="json-value">{display}</span>
+                                    </div>
+                                }.into_any()
                             }
                         }).collect::<Vec<_>>()}
                     </div>
@@ -252,6 +261,57 @@ fn JsonTree(value: serde_json::Value, indent: usize) -> impl IntoView {
                 <span class="json-value" style=padding>{display}</span>
             }.into_any()
         }
+    }
+}
+
+/// Collapsible node — collapsed by default, renders children only when expanded.
+#[component]
+fn JsonCollapsible(
+    key: String,
+    summary: String,
+    value: serde_json::Value,
+    indent: usize,
+) -> impl IntoView {
+    let expanded = RwSignal::new(false);
+
+    view! {
+        <div class="json-collapsible">
+            <div
+                class="json-collapsible-header"
+                on:click=move |_| expanded.update(|v| *v = !*v)
+                style="cursor: pointer; user-select: none;"
+            >
+                <span class="json-toggle">{move || if expanded.get() { "▼ " } else { "▶ " }}</span>
+                <span class="json-key">{format!("{}  ", key)}</span>
+                <span class="json-summary">{summary.clone()}</span>
+            </div>
+            {move || {
+                if expanded.get() {
+                    view! {
+                        <div class="json-collapsible-body">
+                            <JsonTree value=value.clone() indent=indent />
+                        </div>
+                    }.into_any()
+                } else {
+                    view! { <div></div> }.into_any()
+                }
+            }}
+        </div>
+    }
+}
+
+/// Generate a short summary for collapsed nested values.
+fn summarize_value(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::Object(map) => format!("{{}}  {} keys", map.len()),
+        serde_json::Value::Array(items) => {
+            if items.is_empty() {
+                "[]  0 items".to_string()
+            } else {
+                format!("[]  {} items", items.len())
+            }
+        }
+        _ => String::new(),
     }
 }
 

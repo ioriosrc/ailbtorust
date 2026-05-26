@@ -183,6 +183,32 @@ impl Transform {
         }
     }
 
+    /// Compute the inverse transform.
+    /// If T brings points from frame A to frame B, inverse(T) brings from B to A.
+    pub fn inverse(&self) -> Self {
+        // Inverse rotation = conjugate of unit quaternion
+        let inv_rot = Quaternion {
+            w: self.rotation.w,
+            x: -self.rotation.x,
+            y: -self.rotation.y,
+            z: -self.rotation.z,
+        };
+        // Inverse translation = -R^{-1} * t
+        let rot = inv_rot.to_rotation_matrix();
+        let tx = self.translation.x;
+        let ty = self.translation.y;
+        let tz = self.translation.z;
+        let inv_translation = Vec3d {
+            x: -(rot[0] * tx + rot[3] * ty + rot[6] * tz),
+            y: -(rot[1] * tx + rot[4] * ty + rot[7] * tz),
+            z: -(rot[2] * tx + rot[5] * ty + rot[8] * tz),
+        };
+        Self {
+            translation: inv_translation,
+            rotation: inv_rot,
+        }
+    }
+
     /// Convert to a 4x4 homogeneous matrix (column-major, f32 for WebGL).
     pub fn to_mat4_f32(&self) -> [f32; 16] {
         let rot = self.rotation.to_rotation_matrix();
@@ -304,7 +330,7 @@ impl TfTree {
         Self {
             buffers: HashMap::new(),
             parents: HashMap::new(),
-            max_buffer_size: 100,
+            max_buffer_size: 500,
         }
     }
 
@@ -366,10 +392,10 @@ impl TfTree {
             target_to_common = tf.compose(&target_to_common);
         }
 
-        // Result: source_to_common * inverse(target_to_common)
-        // For simplicity, compose forward from common to target
-        // TODO: implement proper inverse composition for full generality
-        Some(source_to_common)
+        // Result: inverse(target_to_common) * source_to_common
+        // This transforms a point FROM source_frame INTO target_frame
+        let result = target_to_common.inverse().compose(&source_to_common);
+        Some(result)
     }
 
     /// Get the path from a frame to the root of the tree.

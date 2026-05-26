@@ -621,7 +621,7 @@ impl LayoutState {
             follow_mode: "pose".into(),
             scene: SceneConfig {
                 enable_stats: false,
-                background_color: "#303030".into(),
+                background_color: String::new(), // empty = theme default (#15151a dark)
                 label_scale: 1.0,
                 ignore_collada_up_axis: false,
                 mesh_up_axis: "y_up".into(),
@@ -631,6 +631,7 @@ impl LayoutState {
                 distance: 50.0,
                 perspective: true,
                 target: [0.0, 0.0, 0.0],
+                target_offset: [0.0, 0.0, 0.0],
                 theta: 45.0,
                 phi: 60.0,
                 fovy: 45.0,

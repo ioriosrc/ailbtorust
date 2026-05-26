@@ -180,30 +180,35 @@ pub struct OrbitCamera {
 
 impl OrbitCamera {
     pub fn new() -> Self {
+        // Default: theta=45° → azimuth = -(90+45)° = -135° = -2.356 rad
+        // Default: phi=60° → elevation = 30° = 0.5236 rad
+        let default_azimuth = (-135.0f32).to_radians();
+        let default_elevation = (30.0f32).to_radians();
         Self {
             target: Vec3::new(0.0, 0.0, 0.0),
             distance: 50.0,
-            azimuth: std::f32::consts::FRAC_PI_4,    // 45° (Theta)
-            elevation: std::f32::consts::FRAC_PI_6,  // 30° (~Phi 60° from zenith)
+            azimuth: default_azimuth,
+            elevation: default_elevation,
             fov_y: std::f32::consts::FRAC_PI_4,      // 45° fov
             perspective: true,
             near: 0.5,
             far: 5000.0,
             user_target: Vec3::new(0.0, 0.0, 0.0),
-            user_azimuth: std::f32::consts::FRAC_PI_4,
-            user_elevation: std::f32::consts::FRAC_PI_6,
+            user_azimuth: default_azimuth,
+            user_elevation: default_elevation,
         }
     }
 
     pub fn eye_position(&self) -> Vec3 {
-        let x = self.distance * self.elevation.cos() * self.azimuth.sin();
-        let y = self.distance * self.elevation.sin();
-        let z = self.distance * self.elevation.cos() * self.azimuth.cos();
+        // Z-up coordinate system (ROS/OSI convention: X=forward, Y=left, Z=up)
+        let x = self.distance * self.elevation.cos() * self.azimuth.cos();
+        let y = self.distance * self.elevation.cos() * self.azimuth.sin();
+        let z = self.distance * self.elevation.sin();
         self.target.add(&Vec3::new(x, y, z))
     }
 
     pub fn view_matrix(&self) -> Mat4 {
-        Mat4::look_at(self.eye_position(), self.target, Vec3::new(0.0, 1.0, 0.0))
+        Mat4::look_at(self.eye_position(), self.target, Vec3::new(0.0, 0.0, 1.0))
     }
 
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
@@ -226,8 +231,8 @@ impl OrbitCamera {
     }
 
     pub fn pan(&mut self, dx: f32, dy: f32) {
-        let right = Vec3::new(self.azimuth.cos(), 0.0, -self.azimuth.sin());
-        let up = Vec3::new(0.0, 1.0, 0.0);
+        let right = Vec3::new(-self.azimuth.sin(), self.azimuth.cos(), 0.0);
+        let up = Vec3::new(0.0, 0.0, 1.0);
         let scale = self.distance * 0.002;
         self.user_target = self.user_target.add(&right.scale(-dx * scale)).add(&up.scale(dy * scale));
     }
@@ -328,6 +333,40 @@ void main() {
 }
 "#;
 
+// ============ Solid Cube Shader (uniform color + basic directional lighting) ============
+
+const SOLID_CUBE_VERT: &str = r#"#version 300 es
+precision highp float;
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_viewProjection;
+uniform mat4 u_modelMatrix;
+out vec3 v_normal;
+out vec3 v_worldPos;
+void main() {
+    vec4 worldPos = u_modelMatrix * vec4(a_position, 1.0);
+    gl_Position = u_viewProjection * worldPos;
+    v_normal = mat3(u_modelMatrix) * a_normal;
+    v_worldPos = worldPos.xyz;
+}
+"#;
+
+const SOLID_CUBE_FRAG: &str = r#"#version 300 es
+precision mediump float;
+uniform vec4 u_color;
+uniform vec3 u_lightDir;
+in vec3 v_normal;
+in vec3 v_worldPos;
+out vec4 outColor;
+void main() {
+    vec3 N = normalize(v_normal);
+    float diffuse = max(dot(N, normalize(u_lightDir)), 0.0);
+    float ambient = 0.35;
+    float light = ambient + diffuse * 0.65;
+    outColor = vec4(u_color.rgb * light, u_color.a);
+}
+"#;
+
 // ============ Triangle Mesh Shader (per-vertex RGBA + model matrix) ============
 
 const TRIANGLE_MESH_VERT: &str = r#"#version 300 es
@@ -402,7 +441,7 @@ fn generate_grid_and_axes(size: i32, spacing: f32, grid_color: [f32; 4]) -> (Vec
 
     let half = size as f32 * spacing;
 
-    // Grid lines (use custom color)
+    // Grid lines in XY plane (Z-up convention: X=forward, Y=left, Z=up)
     let cr = grid_color[0];
     let cg = grid_color[1];
     let cb = grid_color[2];
@@ -412,12 +451,12 @@ fn generate_grid_and_axes(size: i32, spacing: f32, grid_color: [f32; 4]) -> (Vec
         let pos = i as f32 * spacing;
         let alpha = if i == 0 { 0.0 } else { ca }; // Skip center lines (axes go there)
 
-        // Line along X
-        positions.extend_from_slice(&[-half, 0.0, pos, half, 0.0, pos]);
+        // Line along X (at y=pos, z=0)
+        positions.extend_from_slice(&[-half, pos, 0.0, half, pos, 0.0]);
         colors.extend_from_slice(&[cr, cg, cb, alpha, cr, cg, cb, alpha]);
 
-        // Line along Z
-        positions.extend_from_slice(&[pos, 0.0, -half, pos, 0.0, half]);
+        // Line along Y (at x=pos, z=0)
+        positions.extend_from_slice(&[pos, -half, 0.0, pos, half, 0.0]);
         colors.extend_from_slice(&[cr, cg, cb, alpha, cr, cg, cb, alpha]);
     }
 
@@ -425,12 +464,12 @@ fn generate_grid_and_axes(size: i32, spacing: f32, grid_color: [f32; 4]) -> (Vec
     positions.extend_from_slice(&[0.0, 0.0, 0.0, half, 0.0, 0.0]);
     colors.extend_from_slice(&[1.0, 0.2, 0.2, 1.0, 1.0, 0.2, 0.2, 1.0]);
 
-    // Y axis (green) - up
-    positions.extend_from_slice(&[0.0, 0.0, 0.0, 0.0, half * 0.5, 0.0]);
+    // Y axis (green)
+    positions.extend_from_slice(&[0.0, 0.0, 0.0, 0.0, half, 0.0]);
     colors.extend_from_slice(&[0.2, 1.0, 0.2, 1.0, 0.2, 1.0, 0.2, 1.0]);
 
-    // Z axis (blue)
-    positions.extend_from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, half]);
+    // Z axis (blue) - up
+    positions.extend_from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, half * 0.5]);
     colors.extend_from_slice(&[0.2, 0.2, 1.0, 1.0, 0.2, 0.2, 1.0, 1.0]);
 
     (positions, colors)
@@ -512,6 +551,35 @@ fn generate_unit_cube_wireframe() -> Vec<f32> {
     positions
 }
 
+/// Generate solid unit cube triangles with normals for lighting.
+/// Returns (positions, normals) both as flat Vec<f32> (36 vertices = 12 triangles × 3 verts).
+fn generate_unit_cube_solid() -> (Vec<f32>, Vec<f32>) {
+    let v: [[f32; 3]; 8] = [
+        [-0.5, -0.5, -0.5], [ 0.5, -0.5, -0.5],
+        [ 0.5,  0.5, -0.5], [-0.5,  0.5, -0.5],
+        [-0.5, -0.5,  0.5], [ 0.5, -0.5,  0.5],
+        [ 0.5,  0.5,  0.5], [-0.5,  0.5,  0.5],
+    ];
+    // 6 faces, 2 triangles each, with outward normals
+    let faces: [([usize; 6], [f32; 3]); 6] = [
+        ([0,1,2, 0,2,3], [ 0.0, 0.0,-1.0]), // back  (-Z)
+        ([4,6,5, 4,7,6], [ 0.0, 0.0, 1.0]), // front (+Z)
+        ([0,3,7, 0,7,4], [-1.0, 0.0, 0.0]), // left  (-X)
+        ([1,5,6, 1,6,2], [ 1.0, 0.0, 0.0]), // right (+X)
+        ([0,4,5, 0,5,1], [ 0.0,-1.0, 0.0]), // bottom(-Y)
+        ([3,2,6, 3,6,7], [ 0.0, 1.0, 0.0]), // top   (+Y)
+    ];
+    let mut positions = Vec::with_capacity(36 * 3);
+    let mut normals = Vec::with_capacity(36 * 3);
+    for (indices, normal) in faces.iter() {
+        for &idx in indices.iter() {
+            positions.extend_from_slice(&v[idx]);
+            normals.extend_from_slice(normal);
+        }
+    }
+    (positions, normals)
+}
+
 /// Build a model matrix from translation + quaternion rotation + scale
 /// Build a 4x4 offset matrix from translation (tx,ty,tz) and Euler angles (roll,pitch,yaw in radians).
 fn build_offset_matrix(tx: f32, ty: f32, tz: f32, roll: f32, pitch: f32, yaw: f32) -> Mat4 {
@@ -590,10 +658,14 @@ struct SceneState {
     point_cloud_buffer_color: WebGlBuffer,
     line_program: WebGlProgram,
     axes_vao: WebGlVertexArrayObject,
-    // Uniform-color shader for scene entities
+    // Uniform-color shader for scene entities (wireframe)
     uc_program: WebGlProgram,
     cube_vao: WebGlVertexArrayObject,
     cube_vertex_count: i32,
+    // Solid cube shader + VAO (lit, filled triangles)
+    solid_cube_program: WebGlProgram,
+    solid_cube_vao: WebGlVertexArrayObject,
+    solid_cube_vertex_count: i32,
     // Dynamic line buffer for scene lines
     scene_line_vao: WebGlVertexArrayObject,
     scene_line_buffer: WebGlBuffer,
@@ -708,6 +780,34 @@ impl SceneState {
         gl.vertex_attrib_pointer_with_i32(0, 3, GL::FLOAT, false, 0, 0);
         gl.bind_vertex_array(None);
 
+        // Compile solid cube shader (lit)
+        let sc_vs = compile_shader(&gl, GL::VERTEX_SHADER, SOLID_CUBE_VERT)?;
+        let sc_fs = compile_shader(&gl, GL::FRAGMENT_SHADER, SOLID_CUBE_FRAG)?;
+        let solid_cube_program = link_program(&gl, &sc_vs, &sc_fs)?;
+
+        // Create solid cube VAO (triangles + normals)
+        let (solid_positions, solid_normals) = generate_unit_cube_solid();
+        let solid_cube_vertex_count = (solid_positions.len() / 3) as i32;
+        let solid_cube_vao = gl.create_vertex_array().ok_or("Failed to create solid cube VAO")?;
+        gl.bind_vertex_array(Some(&solid_cube_vao));
+        let solid_pos_vbo = gl.create_buffer().ok_or("Failed to create solid cube pos VBO")?;
+        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&solid_pos_vbo));
+        unsafe {
+            let array = js_sys::Float32Array::view(&solid_positions);
+            gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::STATIC_DRAW);
+        }
+        gl.enable_vertex_attrib_array(0);
+        gl.vertex_attrib_pointer_with_i32(0, 3, GL::FLOAT, false, 0, 0);
+        let solid_norm_vbo = gl.create_buffer().ok_or("Failed to create solid cube norm VBO")?;
+        gl.bind_buffer(GL::ARRAY_BUFFER, Some(&solid_norm_vbo));
+        unsafe {
+            let array = js_sys::Float32Array::view(&solid_normals);
+            gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::STATIC_DRAW);
+        }
+        gl.enable_vertex_attrib_array(1);
+        gl.vertex_attrib_pointer_with_i32(1, 3, GL::FLOAT, false, 0, 0);
+        gl.bind_vertex_array(None);
+
         // Create dynamic line VAO for scene lines
         let scene_line_vao = gl.create_vertex_array().ok_or("Failed to create scene line VAO")?;
         gl.bind_vertex_array(Some(&scene_line_vao));
@@ -750,6 +850,9 @@ impl SceneState {
             uc_program,
             cube_vao,
             cube_vertex_count,
+            solid_cube_program,
+            solid_cube_vao,
+            solid_cube_vertex_count,
             scene_line_vao,
             scene_line_buffer,
             tri_mesh_program,
@@ -762,7 +865,8 @@ impl SceneState {
             camera: OrbitCamera::new(),
             canvas_width: width,
             canvas_height: height,
-            bg_color: [0.12, 0.12, 0.14],
+            // Default dark theme background matches Node.js Lichtblick (#15151a)
+            bg_color: [0.082, 0.082, 0.102],
             tf_axis_scale: 1.0,
             tf_line_width: 2.0,
             tf_line_color: [1.0, 1.0, 0.0],
@@ -883,6 +987,18 @@ impl SceneState {
             self.fps = self.frame_count as f32 / ((now - self.last_fps_time) as f32 / 1000.0);
             self.frame_count = 0;
             self.last_fps_time = now;
+
+            // Diagnostic: log render state once per second
+            let (cube_count, line_count, tri_count) = SCENE_ENTITIES.with(|ent| {
+                let e = ent.borrow();
+                (e.0.len(), e.1.len(), e.2.len())
+            });
+            web_sys::console::log_1(&format!(
+                "[3D render] grids={} cubes={} lines={} tris={} cam_az={:.1}° cam_el={:.1}° dist={:.1} canvas={}x{}",
+                self.grids.len(), cube_count, line_count, tri_count,
+                self.camera.azimuth.to_degrees(), self.camera.elevation.to_degrees(),
+                self.camera.distance, self.canvas_width, self.canvas_height
+            ).into());
         }
 
         gl.viewport(0, 0, self.canvas_width as i32, self.canvas_height as i32);
@@ -1070,10 +1186,19 @@ impl SceneState {
             let color_loc = gl.get_uniform_location(&self.uc_program, "u_color");
             gl.uniform_matrix4fv_with_f32_array(vp_loc.as_ref(), false, &vp.data);
 
-            // Draw cubes
+            // Draw cubes (solid, lit)
             if !cubes.is_empty() {
-                gl.bind_vertex_array(Some(&self.cube_vao));
-                gl.line_width(2.0);
+                gl.use_program(Some(&self.solid_cube_program));
+                let sc_vp_loc = gl.get_uniform_location(&self.solid_cube_program, "u_viewProjection");
+                let sc_model_loc = gl.get_uniform_location(&self.solid_cube_program, "u_modelMatrix");
+                let sc_color_loc = gl.get_uniform_location(&self.solid_cube_program, "u_color");
+                let sc_light_loc = gl.get_uniform_location(&self.solid_cube_program, "u_lightDir");
+                gl.uniform_matrix4fv_with_f32_array(sc_vp_loc.as_ref(), false, &vp.data);
+                // Light from upper-right-front
+                gl.uniform3f(sc_light_loc.as_ref(), 0.3, 0.8, 0.5);
+                gl.enable(GL::CULL_FACE);
+                gl.cull_face(GL::BACK);
+                gl.bind_vertex_array(Some(&self.solid_cube_vao));
 
                 for cube in cubes.iter() {
                     // Get TF from display_frame to entity's frame_id
@@ -1094,10 +1219,13 @@ impl SceneState {
                         cube.sx, cube.sy, cube.sz,
                     );
                     let model = frame_mat.multiply(&cube_mat);
-                    gl.uniform_matrix4fv_with_f32_array(model_loc.as_ref(), false, &model.data);
-                    gl.uniform4f(color_loc.as_ref(), cube.r, cube.g, cube.b, cube.a);
-                    gl.draw_arrays(GL::LINES, 0, self.cube_vertex_count);
+                    gl.uniform_matrix4fv_with_f32_array(sc_model_loc.as_ref(), false, &model.data);
+                    gl.uniform4f(sc_color_loc.as_ref(), cube.r, cube.g, cube.b, cube.a);
+                    gl.draw_arrays(GL::TRIANGLES, 0, self.solid_cube_vertex_count);
                 }
+                gl.disable(GL::CULL_FACE);
+                // Restore uc_program for lines/triangles below
+                gl.use_program(Some(&self.uc_program));
             }
 
             // Draw lines
@@ -1371,6 +1499,34 @@ pub fn get_tf_frame_metadata(frame_name: &str, current_time_ns: u64) -> Option<(
             "unknown".to_string()
         };
         Some((parent, history_size, age_str))
+    })
+}
+
+/// Get live TF translation and rotation (as yaw/pitch/roll degrees) for a frame.
+/// Returns (tx, ty, tz, roll_deg, pitch_deg, yaw_deg)
+pub fn get_tf_frame_transform(frame_name: &str, current_time_ns: u64) -> Option<(f64, f64, f64, f64, f64, f64)> {
+    TF_STATE.with(|tf| {
+        let tree = tf.borrow();
+        let parent = tree.get_parent(frame_name)?;
+        let transform = tree.lookup(&parent, frame_name, current_time_ns)?;
+        let tx = transform.translation.x;
+        let ty = transform.translation.y;
+        let tz = transform.translation.z;
+        // Quaternion to Euler (ZYX convention → yaw, pitch, roll)
+        let q = &transform.rotation;
+        let sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z);
+        let cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
+        let roll = sinr_cosp.atan2(cosr_cosp).to_degrees();
+        let sinp = 2.0 * (q.w * q.y - q.z * q.x);
+        let pitch = if sinp.abs() >= 1.0 {
+            90.0_f64.copysign(sinp)
+        } else {
+            sinp.asin().to_degrees()
+        };
+        let siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+        let cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+        let yaw = siny_cosp.atan2(cosy_cosp).to_degrees();
+        Some((tx, ty, tz, roll, pitch, yaw))
     })
 }
 
@@ -2204,9 +2360,22 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             s.camera.near = cfg.view.near as f32;
             s.camera.far = cfg.view.far as f32;
             s.camera.distance = cfg.view.distance as f32;
-            // Apply theta/phi from config (degrees -> radians) as initial user values
-            s.camera.user_azimuth = (cfg.view.theta as f32).to_radians();
-            s.camera.user_elevation = (cfg.view.phi as f32).to_radians().min(1.4);
+            // Convert Node.js thetaOffset convention to Rust azimuth:
+            // Node.js: camera.x = -r*sin(phi)*sin(thetaOffset), camera.y = -r*sin(phi)*cos(thetaOffset)
+            // Rust:    camera.x = r*sin(phi)*cos(azimuth),       camera.y = r*sin(phi)*sin(azimuth)
+            // Match: azimuth = -(90° + thetaOffset) in radians
+            let theta_deg = cfg.view.theta as f32;
+            s.camera.user_azimuth = (-(90.0 + theta_deg)).to_radians();
+            // Phi in Foxglove = angle from zenith (0=top-down, 90=horizontal)
+            // Rust elevation = angle from horizontal (0=horizontal, π/2=top-down)
+            // So: elevation = 90° - phi
+            s.camera.user_elevation = ((90.0 - cfg.view.phi as f32).to_radians()).clamp(-1.4, 1.4);
+            // targetOffset = orbit center offset (user pan)
+            s.camera.user_target = Vec3::new(
+                cfg.view.target_offset[0] as f32,
+                cfg.view.target_offset[1] as f32,
+                cfg.view.target_offset[2] as f32,
+            );
 
             // Follow mode
             s.follow_mode = cfg.follow_mode.clone();
@@ -2331,53 +2500,54 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
                 }
             }
 
-            // Get current message and decode in Rust, then pass to JS converters
-            if let Some(msg) = player.get_current_message(&topic_info.name) {
-                // Skip if same timestamp already processed
-                let mut should_process = false;
-                last_processed_times.update(|map| {
-                    let last = map.get(&topic_info.name).copied().unwrap_or(0);
-                    if msg.log_time_ns != last {
-                        map.insert(topic_info.name.clone(), msg.log_time_ns);
-                        should_process = true;
-                    }
-                });
-                if !should_process {
-                    continue;
-                }
+            // Get messages in range since last processed time → current time
+            // Limit batch size to avoid freezing on first load (3001 messages × 500KB proto = too much)
+            let current_time_ns = player.current_time_ns();
+            let last_time = last_processed_times.get_untracked().get(&topic_info.name).copied().unwrap_or(0);
+            if last_time >= current_time_ns {
+                continue;
+            }
+            // Get messages from (last_time+1) to current_time
+            let range_start = if last_time > 0 { last_time + 1 } else { 0 };
+            let mut messages = player.get_messages_in_range(&topic_info.name, range_start, current_time_ns);
+            if messages.is_empty() {
+                continue;
+            }
+            // Limit to max 30 messages per tick to keep UI responsive.
+            // If more messages exist, keep only the LAST 30 (most recent for TF + scene).
+            const MAX_BATCH: usize = 30;
+            if messages.len() > MAX_BATCH {
+                let start_idx = messages.len() - MAX_BATCH;
+                messages = messages.split_off(start_idx);
+            }
+            // Update last processed time
+            let final_time = messages.last().map(|m| m.log_time_ns).unwrap_or(current_time_ns);
+            last_processed_times.update(|map| {
+                map.insert(topic_info.name.clone(), final_time);
+            });
 
+            // Process each message in the range
+            for msg in messages.iter() {
                 // Decode protobuf in Rust using prost-reflect
                 let js_obj = PROTO_POOLS.with(|pools| {
                     let pools_ref = pools.borrow();
                     let pool = match pools_ref.get(&topic_info.schema_name) {
                         Some(p) => p,
                         None => {
-                            web_sys::console::warn_1(&format!("[3D] No pool for schema: {}", topic_info.schema_name).into());
                             return None;
                         }
                     };
                     let message_desc = match pool.get_message_by_name(&topic_info.schema_name) {
                         Some(d) => d,
                         None => {
-                            // List available message names for debugging
-                            let available: Vec<String> = pool.all_messages().map(|m| m.full_name().to_string()).collect();
-                            web_sys::console::warn_1(&format!(
-                                "[3D] Message '{}' not found in pool. Available: {:?}",
-                                topic_info.schema_name,
-                                &available[..available.len().min(10)]
-                            ).into());
                             return None;
                         }
                     };
                     match prost_reflect::DynamicMessage::decode(message_desc, msg.data.as_slice()) {
                         Ok(dynamic_msg) => {
-                            // Convert DynamicMessage to JsValue with snake_case field names
                             Some(dynamic_message_to_js(&dynamic_msg))
                         }
-                        Err(e) => {
-                            web_sys::console::warn_1(&format!("[3D] Failed to decode proto {}: {}", topic_info.schema_name, e).into());
-                            None
-                        }
+                        Err(_) => None,
                     }
                 });
 
@@ -2403,61 +2573,61 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
                         }
                     }
 
-                    // Call SceneUpdate converter
-                    let scene_result = js_convert_message_to_scene(&topic_info.schema_name, message_obj, config_js);
-                    if !scene_result.is_null() && !scene_result.is_undefined() {
-                        let (cubes, lines, triangles) = parse_scene_update_result(&scene_result);
-                        if !cubes.is_empty() || !lines.is_empty() || !triangles.is_empty() {
-                            // Auto-center camera only when no display frame / TF is available
-                            let need_center = !has_centered.get_untracked();
-                            let has_display_frame = !state.display_frame.get_untracked().is_empty();
-                            if need_center && !triangles.is_empty() && !has_display_frame {
-                                // No TF/display frame - center on scene data centroid
-                                let mut cx = 0.0f64;
-                                let mut cy = 0.0f64;
-                                let mut cz = 0.0f64;
-                                let mut count = 0u32;
-                                for tri in triangles.iter().take(50) {
-                                    for chunk in tri.points.chunks(3) {
-                                        if chunk.len() == 3 {
-                                            cx += chunk[0] as f64;
-                                            cy += chunk[1] as f64;
-                                            cz += chunk[2] as f64;
-                                            count += 1;
+                    // Call SceneUpdate converter (only for last message in batch to avoid thrashing)
+                    if std::ptr::eq(msg, messages.last().unwrap()) {
+                        let scene_result = js_convert_message_to_scene(&topic_info.schema_name, message_obj, config_js);
+                        if !scene_result.is_null() && !scene_result.is_undefined() {
+                            let (cubes, lines, triangles) = parse_scene_update_result(&scene_result);
+                            if !cubes.is_empty() || !lines.is_empty() || !triangles.is_empty() {
+                                // Auto-center camera only when no display frame / TF is available
+                                let need_center = !has_centered.get_untracked();
+                                let has_display_frame = !state.display_frame.get_untracked().is_empty();
+                                if need_center && !triangles.is_empty() && !has_display_frame {
+                                    let mut cx = 0.0f64;
+                                    let mut cy = 0.0f64;
+                                    let mut cz = 0.0f64;
+                                    let mut count = 0u32;
+                                    for tri in triangles.iter().take(50) {
+                                        for chunk in tri.points.chunks(3) {
+                                            if chunk.len() == 3 {
+                                                cx += chunk[0] as f64;
+                                                cy += chunk[1] as f64;
+                                                cz += chunk[2] as f64;
+                                                count += 1;
+                                            }
                                         }
+                                        if count > 500 { break; }
                                     }
-                                    if count > 500 { break; }
+                                    if count > 0 {
+                                        cx /= count as f64;
+                                        cy /= count as f64;
+                                        cz /= count as f64;
+                                        with_scene_mut(|s| {
+                                            s.camera.user_target = Vec3::new(cx as f32, cy as f32, cz as f32);
+                                            s.camera.target = s.camera.user_target;
+                                            s.camera.distance = 200.0;
+                                            s.camera.user_elevation = 1.0;
+                                        });
+                                    }
+                                    has_centered.set(true);
+                                } else if need_center && has_display_frame {
+                                    has_centered.set(true);
                                 }
-                                if count > 0 {
-                                    cx /= count as f64;
-                                    cy /= count as f64;
-                                    cz /= count as f64;
-                                    with_scene_mut(|s| {
-                                        s.camera.user_target = Vec3::new(cx as f32, cy as f32, cz as f32);
-                                        s.camera.target = s.camera.user_target;
-                                        s.camera.distance = 200.0;
-                                        s.camera.user_elevation = 1.0;
-                                    });
-                                }
-                                has_centered.set(true);
-                            } else if need_center && has_display_frame {
-                                // TF active - camera orbits around display frame origin
-                                has_centered.set(true);
-                            }
 
-                            SCENE_ENTITIES.with(|ent| {
-                                let mut e = ent.borrow_mut();
-                                e.0 = cubes;
-                                e.1 = lines;
-                                e.2 = triangles;
-                            });
-                            with_scene_mut(|s| {
-                                s.render();
-                            });
+                                SCENE_ENTITIES.with(|ent| {
+                                    let mut e = ent.borrow_mut();
+                                    e.0 = cubes;
+                                    e.1 = lines;
+                                    e.2 = triangles;
+                                });
+                                with_scene_mut(|s| {
+                                    s.render();
+                                });
+                            }
                         }
                     }
                 }
-            }
+            } // end for msg in messages
         }
 
         // Update available frames signal if new frames were discovered

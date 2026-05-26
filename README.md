@@ -186,6 +186,25 @@ cargo test -p lichtblick-mcap
 cargo test -p lichtblick-core
 ```
 
+### E2E Tests (Playwright):
+
+```bash
+# Install Playwright
+cd e2e && npm install && npx playwright install chromium
+
+# Run against Rust app (port 8081)
+npx playwright test --project=rust
+
+# Run against Node.js reference (port 8080)
+npx playwright test --project=nodejs
+
+# Run visual comparison (both must be running)
+npx playwright test --project=compare
+
+# View HTML report
+npx playwright show-report reports/html
+```
+
 ### Check compilation:
 
 ```bash
@@ -197,6 +216,19 @@ cargo check --target wasm32-unknown-unknown
 ```bash
 cargo clippy --target wasm32-unknown-unknown -- -D warnings
 ```
+
+## Multi-Agent Development Workflow
+
+This project uses a structured agent pipeline for development. See [AGENTS.md](AGENTS.md) for full details.
+
+| Agent | Role | Tools |
+|-------|------|-------|
+| **Code** | Implement features & fixes | `cargo build`, `wasm-bindgen` |
+| **Review** | Best practices, performance, security | `cargo clippy`, manual review |
+| **QA** | Automated testing | Playwright E2E, `cargo fmt`, integration |
+| **Compare** | Visual diff Rust vs Node.js | Playwright screenshots, console debug |
+
+**Flow:** Code → Review → QA/Compare → (loop if issues) → Done
 
 ## Project Structure
 

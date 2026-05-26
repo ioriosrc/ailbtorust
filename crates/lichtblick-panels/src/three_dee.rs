@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Full configuration for the 3D panel, matching Lichtblick Node.js settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +64,7 @@ impl Default for SceneConfig {
     fn default() -> Self {
         Self {
             enable_stats: false,
-            background_color: "#1a1a2e".into(),
+            background_color: String::new(), // empty = use theme default (#15151a dark, #f4f4f5 light)
             label_scale: 1.0,
             ignore_collada_up_axis: false,
             mesh_up_axis: "y_up".into(),
@@ -82,11 +82,14 @@ pub struct ViewConfig {
     pub distance: f64,
     /// Perspective (true) or Orthographic (false).
     pub perspective: bool,
-    /// Camera focal point.
+    /// Camera focal point (world-space target, usually [0,0,0]).
     pub target: [f64; 3],
-    /// Azimuthal angle (degrees).
+    /// Camera orbit center offset from frame origin (user pan).
+    /// Equivalent to Node.js cameraState.targetOffset.
+    pub target_offset: [f64; 3],
+    /// Azimuthal angle (degrees) - thetaOffset in Node.js convention.
     pub theta: f64,
-    /// Polar pitch angle (degrees).
+    /// Polar pitch angle from zenith (degrees) - phi in Node.js convention.
     pub phi: f64,
     /// Vertical field of view (degrees, perspective only).
     pub fovy: f64,
@@ -103,6 +106,7 @@ impl Default for ViewConfig {
             distance: 50.0,
             perspective: true,
             target: [0.0, 0.0, 0.0],
+            target_offset: [0.0, 0.0, 0.0],
             theta: 45.0,
             phi: 60.0,
             fovy: 45.0,
@@ -134,6 +138,8 @@ pub struct TransformsConfig {
     pub max_preload_messages: u32,
     /// Per-frame manual offsets.
     pub offsets: HashMap<String, TransformOffset>,
+    /// Frames hidden from 3D viewport.
+    pub hidden_frames: HashSet<String>,
 }
 
 impl Default for TransformsConfig {
@@ -148,6 +154,7 @@ impl Default for TransformsConfig {
             enable_preloading: false,
             max_preload_messages: 10000,
             offsets: HashMap::new(),
+            hidden_frames: HashSet::new(),
         }
     }
 }

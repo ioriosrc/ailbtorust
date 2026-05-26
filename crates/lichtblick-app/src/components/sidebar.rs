@@ -2057,10 +2057,24 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
         <div class="settings-section" style=transforms_style>
             <div class="settings-section-header">
                 <h4 class="settings-section-title" on:click=move |_| transforms_open.update(|v| *v = !*v)>
-                    {move || if transforms_open.get() { "▼ Transforms" } else { "▶ Transforms" }}
+                    {move || {
+                        let count = frames().len();
+                        if transforms_open.get() {
+                            format!("▼ Transforms ({})", count)
+                        } else {
+                            format!("▶ Transforms ({})", count)
+                        }
+                    }}
                 </h4>
             </div>
-            <div class="settings-section-body" class:collapsed=move || !transforms_open.get()>
+            <div class="settings-section-body" style=move || if transforms_open.get() { "" } else { "display:none;" }>
+                // Collapsible Settings subsection
+                <div style="padding-bottom:4px; margin-bottom:2px;">
+                    <div style="display:flex; align-items:center; cursor:pointer; padding:3px 0;">
+                        <span style="font-size:10px; width:12px; color:var(--text-secondary);">{"▶"}</span>
+                        <span style="font-size:11px; font-weight:500; color:var(--text-primary);">{"Settings"}</span>
+                    </div>
+                </div>
                 <div class="settings-row">
                     <label class="settings-label">{"Show labels"}</label>
                     <div class="toggle-group">
@@ -2069,6 +2083,27 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
                         <button class="toggle-btn" class:active=move || config().transforms.show_labels
                             on:click=move |_| on_show_labels_change(true)>{"On"}</button>
                     </div>
+                </div>
+                <div class="settings-row">
+                    <label class="settings-label">{"Label size"}</label>
+                    <input type="number" class="settings-number-input"
+                        step="0.1" min="0.05" max="2.0"
+                        value=move || format!("{:.1}", config().transforms.label_size)
+                        on:change={
+                            let node_id2 = node_id.clone();
+                            move |ev: leptos::ev::Event| {
+                                if let Some(t) = ev.target() {
+                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                        if let Ok(v) = inp.value().parse::<f64>() {
+                                            layout.update_three_dee_config(node_id2, move |c| {
+                                                c.transforms.label_size = v.clamp(0.05, 2.0);
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    />
                 </div>
                 <div class="settings-row">
                     <label class="settings-label">{"Axis scale"}</label>
@@ -2111,171 +2146,90 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
                             on:click=move |_| on_preloading_change(true)>{"On"}</button>
                     </div>
                 </div>
-                // Frame list: always visible with metadata; offsets only when editable
+                <div class="settings-row">
+                    <label class="settings-label">{"Max preload mes..."}</label>
+                    <input type="number" class="settings-number-input"
+                        step="1000" min="100" max="100000"
+                        prop:value=move || config().transforms.max_preload_messages.to_string()
+                        on:change={
+                            let node_id2 = node_id.clone();
+                            move |ev: leptos::ev::Event| {
+                                if let Some(t) = ev.target() {
+                                    if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
+                                        if let Ok(v) = inp.value().parse::<u32>() {
+                                            layout.update_three_dee_config(node_id2, move |c| {
+                                                c.transforms.max_preload_messages = v.clamp(100, 100000);
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    />
+                </div>
+                // Frame list: expandable tree like Node.js Lichtblick
                 {move || {
-                    let _tick = state.frame_tick.get(); // re-render on tick for age updates
-                    let cfg_val = config();
-                    let is_editable = cfg_val.transforms.editable;
+                    let _tick = state.frame_tick.get();
                     let tf_list = frames();
                     let current_time = get_player().map(|p| p.current_time_ns()).unwrap_or(0);
 
                     tf_list.into_iter().map(|frame_name| {
-                        // Get metadata (parent, history, age)
                         let meta = get_tf_frame_metadata(&frame_name, current_time);
                         let (parent_str, history_size, age_str) = meta.unwrap_or_else(|| ("(root)".to_string(), 0, "—".to_string()));
+                        let transform = crate::panels::three_dee_panel::get_tf_frame_transform(&frame_name, current_time);
+                        let (tx, ty, tz, roll, pitch, yaw) = transform.unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
 
-                        let offset = cfg_val.transforms.offsets.get(&frame_name).cloned()
-                            .unwrap_or_default();
-                        let fn1 = frame_name.clone();
-                        let fn2 = frame_name.clone();
-                        let fn3 = frame_name.clone();
-                        let fn4 = frame_name.clone();
-                        let fn5 = frame_name.clone();
-                        let fn6 = frame_name.clone();
-                        let tx = offset.translation[0];
-                        let ty = offset.translation[1];
-                        let tz = offset.translation[2];
-                        let rx = offset.rotation[0].to_degrees();
-                        let ry = offset.rotation[1].to_degrees();
-                        let rz = offset.rotation[2].to_degrees();
+                        let frame_name_display = frame_name.clone();
+                        let expanded = RwSignal::new(false);
                         view! {
-                            <div style="padding: 4px 0; border-top: 1px solid var(--border-color);">
-                                <div style="font-size:11px; color:var(--text-primary); margin-bottom:2px; font-weight:500;">
-                                    {frame_name.clone()}
+                            <div style="border-top: 1px solid var(--border-color); padding: 2px 0;">
+                                <div style="display:flex; align-items:center; cursor:pointer; padding:4px 0;"
+                                    on:click=move |_| expanded.set(!expanded.get())>
+                                    <span style="font-size:10px; width:12px; color:var(--text-secondary);">
+                                        {move || if expanded.get() { "▼" } else { "▶" }}
+                                    </span>
+                                    <span style="font-size:11px; font-weight:600; color:var(--text-primary);">
+                                        {frame_name_display.clone()}
+                                    </span>
                                 </div>
-                                <div style="font-size:10px; color:var(--text-secondary); margin-bottom:4px;">
-                                    {format!("Parent: {} | History: {} | Age: {}", parent_str, history_size, age_str)}
+                                <div style=move || if expanded.get() { "padding-left:16px;" } else { "display:none;" }>
+                                    <div class="settings-row" style="padding:2px 0;">
+                                        <label class="settings-label" style="min-width:80px; font-size:11px;">{"Parent"}</label>
+                                        <span style="font-size:11px; color:var(--text-primary);">{parent_str.clone()}</span>
+                                    </div>
+                                    <div class="settings-row" style="padding:2px 0;">
+                                        <label class="settings-label" style="min-width:80px; font-size:11px;">{"Age"}</label>
+                                        <span style="font-size:11px; color:var(--text-primary);">{age_str.clone()}</span>
+                                    </div>
+                                    <div class="settings-row" style="padding:2px 0;">
+                                        <label class="settings-label" style="min-width:80px; font-size:11px;">{"History size"}</label>
+                                        <span style="font-size:11px; color:var(--text-primary);">{history_size}</span>
+                                    </div>
+                                    <div class="settings-row" style="padding:2px 0;">
+                                        <label class="settings-label" style="min-width:80px; font-size:11px;">{"Translation X"}</label>
+                                        <span style="font-size:11px; color:var(--text-primary);">{format!("{:.3}", tx)}</span>
+                                    </div>
+                                    <div class="settings-row" style="padding:2px 0;">
+                                        <label class="settings-label" style="min-width:80px; font-size:11px;">{"Y"}</label>
+                                        <span style="font-size:11px; color:var(--text-primary);">{format!("{:.3}", ty)}</span>
+                                    </div>
+                                    <div class="settings-row" style="padding:2px 0;">
+                                        <label class="settings-label" style="min-width:80px; font-size:11px;">{"Z"}</label>
+                                        <span style="font-size:11px; color:var(--text-primary);">{format!("{:.1}", tz)}</span>
+                                    </div>
+                                    <div class="settings-row" style="padding:2px 0;">
+                                        <label class="settings-label" style="min-width:80px; font-size:11px;">{"Rotation R"}</label>
+                                        <span style="font-size:11px; color:var(--text-primary);">{format!("{:.1}", roll)}</span>
+                                    </div>
+                                    <div class="settings-row" style="padding:2px 0;">
+                                        <label class="settings-label" style="min-width:80px; font-size:11px;">{"P"}</label>
+                                        <span style="font-size:11px; color:var(--text-primary);">{format!("{:.1}", pitch)}</span>
+                                    </div>
+                                    <div class="settings-row" style="padding:2px 0;">
+                                        <label class="settings-label" style="min-width:80px; font-size:11px;">{"Y"}</label>
+                                        <span style="font-size:11px; color:var(--text-primary);">{format!("{:.1}", yaw)}</span>
+                                    </div>
                                 </div>
-                                {if is_editable {
-                                    Some(view! {
-                                        <div class="settings-row">
-                                            <label class="settings-label" style="min-width:20px;">{"X"}</label>
-                                            <input type="number" class="settings-number-input" step="0.1"
-                                                value=format!("{:.2}", tx)
-                                                on:change={
-                                                    let f = fn1.clone();
-                                                    move |ev: leptos::ev::Event| {
-                                                        if let Some(t) = ev.target() {
-                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                                if let Ok(v) = inp.value().parse::<f64>() {
-                                                                    let f = f.clone();
-                                                                    layout.update_three_dee_config(node_id, move |c| {
-                                                                        let o = c.transforms.offsets.entry(f).or_default();
-                                                                        o.translation[0] = v;
-                                                                    });
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            />
-                                            <label class="settings-label" style="min-width:20px;">{"Y"}</label>
-                                            <input type="number" class="settings-number-input" step="0.1"
-                                                value=format!("{:.2}", ty)
-                                                on:change={
-                                                    let f = fn2.clone();
-                                                    move |ev: leptos::ev::Event| {
-                                                        if let Some(t) = ev.target() {
-                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                                if let Ok(v) = inp.value().parse::<f64>() {
-                                                                    let f = f.clone();
-                                                                    layout.update_three_dee_config(node_id, move |c| {
-                                                                        let o = c.transforms.offsets.entry(f).or_default();
-                                                                        o.translation[1] = v;
-                                                                    });
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            />
-                                            <label class="settings-label" style="min-width:20px;">{"Z"}</label>
-                                            <input type="number" class="settings-number-input" step="0.1"
-                                                value=format!("{:.2}", tz)
-                                                on:change={
-                                                    let f = fn3.clone();
-                                                    move |ev: leptos::ev::Event| {
-                                                        if let Some(t) = ev.target() {
-                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                                if let Ok(v) = inp.value().parse::<f64>() {
-                                                                    let f = f.clone();
-                                                                    layout.update_three_dee_config(node_id, move |c| {
-                                                                        let o = c.transforms.offsets.entry(f).or_default();
-                                                                        o.translation[2] = v;
-                                                                    });
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            />
-                                        </div>
-                                        <div class="settings-row">
-                                            <label class="settings-label" style="min-width:20px;">{"R"}</label>
-                                            <input type="number" class="settings-number-input" step="1"
-                                                value=format!("{:.1}", rx)
-                                                on:change={
-                                                    let f = fn4.clone();
-                                                    move |ev: leptos::ev::Event| {
-                                                        if let Some(t) = ev.target() {
-                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                                if let Ok(v) = inp.value().parse::<f64>() {
-                                                                    let f = f.clone();
-                                                                    layout.update_three_dee_config(node_id, move |c| {
-                                                                        let o = c.transforms.offsets.entry(f).or_default();
-                                                                        o.rotation[0] = v.to_radians();
-                                                                    });
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            />
-                                            <label class="settings-label" style="min-width:20px;">{"P"}</label>
-                                            <input type="number" class="settings-number-input" step="1"
-                                                value=format!("{:.1}", ry)
-                                                on:change={
-                                                    let f = fn5.clone();
-                                                    move |ev: leptos::ev::Event| {
-                                                        if let Some(t) = ev.target() {
-                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                                if let Ok(v) = inp.value().parse::<f64>() {
-                                                                    let f = f.clone();
-                                                                    layout.update_three_dee_config(node_id, move |c| {
-                                                                        let o = c.transforms.offsets.entry(f).or_default();
-                                                                        o.rotation[1] = v.to_radians();
-                                                                    });
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            />
-                                            <label class="settings-label" style="min-width:20px;">{"Y"}</label>
-                                            <input type="number" class="settings-number-input" step="1"
-                                                value=format!("{:.1}", rz)
-                                                on:change={
-                                                    let f = fn6.clone();
-                                                    move |ev: leptos::ev::Event| {
-                                                        if let Some(t) = ev.target() {
-                                                            if let Ok(inp) = t.dyn_into::<web_sys::HtmlInputElement>() {
-                                                                if let Ok(v) = inp.value().parse::<f64>() {
-                                                                    let f = f.clone();
-                                                                    layout.update_three_dee_config(node_id, move |c| {
-                                                                        let o = c.transforms.offsets.entry(f).or_default();
-                                                                        o.rotation[2] = v.to_radians();
-                                                                    });
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            />
-                                        </div>
-                                    })
-                                } else {
-                                    None
-                                }}
                             </div>
                         }.into_any()
                     }).collect::<Vec<_>>()
