@@ -5,7 +5,7 @@
 //! Matches Lichtblick Node.js output: topic in toolbar, schema@timestamp header, JSON fields.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 
@@ -188,130 +188,227 @@ pub fn RawMessagesPanel(#[prop(into)] topic: String, node_id: NodeId) -> impl In
     }
 }
 
-/// JSON tree display component — collapsed by default, lazy render on expand.
-#[component]
-fn JsonTree(value: serde_json::Value, indent: usize) -> impl IntoView {
-    let padding = format!("padding-left: {}px", indent * 16);
+/// JSON tree display component — virtualized list for performance.
+/// Only renders visible rows (based on scroll position), avoiding DOM explosion
+/// with large OSI messages that can have 20,000+ nested fields.
+#[derive(Clone, Debug, PartialEq)]
+struct FlatRow {
+    path: String,
+    indent: usize,
+    label: String,
+    value_type: &'static str, // "object", "array", "primitive"
+    summary: String,
+    is_collapsible: bool,
+    is_expanded: bool,
+}
 
-    match value {
+fn flatten_json(
+    value: &serde_json::Value,
+    label: &str,
+    path: &str,
+    indent: usize,
+    expanded_paths: &HashSet<String>,
+    rows: &mut Vec<FlatRow>,
+) {
+    let is_collapsible = value.is_object() || value.is_array();
+    let is_expanded = expanded_paths.contains(path);
+
+    let summary = match value {
+        serde_json::Value::Object(map) => format!("{{}} {} keys", map.len()),
+        serde_json::Value::Array(items) => format!("[] {} items", items.len()),
+        _ => format_json_value(value),
+    };
+
+    let value_type = match value {
+        serde_json::Value::Object(_) => "object",
+        serde_json::Value::Array(_) => "array",
+        _ => "primitive",
+    };
+
+    rows.push(FlatRow {
+        path: path.to_string(),
+        indent,
+        label: label.to_string(),
+        value_type,
+        summary,
+        is_collapsible,
+        is_expanded,
+    });
+
+    if is_collapsible && is_expanded {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                for key in keys {
+                    let child_val = map.get(key).unwrap();
+                    let child_path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{}.{}", path, key)
+                    };
+                    flatten_json(child_val, key, &child_path, indent + 1, expanded_paths, rows);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, val) in items.iter().enumerate() {
+                    let child_label = format!("[{}]", i);
+                    let child_path = format!("{}[{}]", path, i);
+                    flatten_json(val, &child_label, &child_path, indent + 1, expanded_paths, rows);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn get_visible_rows(root: &serde_json::Value, expanded_paths: &HashSet<String>) -> Vec<FlatRow> {
+    let mut rows = Vec::new();
+    match root {
         serde_json::Value::Object(map) => {
-            let entries: Vec<_> = map.into_iter().collect();
-            view! {
-                <div class="json-object" style=padding>
-                    {entries.into_iter().map(|(key, val)| {
-                        let is_nested = matches!(&val, serde_json::Value::Object(_) | serde_json::Value::Array(_));
-                        if is_nested {
-                            let summary = summarize_value(&val);
-                            view! {
-                                <JsonCollapsible key=key summary=summary value=val indent=indent+1 />
-                            }.into_any()
-                        } else {
-                            let display = format_json_value(&val);
-                            view! {
-                                <div class="json-field-inline">
-                                    <span class="json-key">{format!("{}: ", key)}</span>
-                                    <span class="json-value">{display}</span>
-                                </div>
-                            }.into_any()
-                        }
-                    }).collect::<Vec<_>>()}
-                </div>
-            }.into_any()
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for key in keys {
+                let val = map.get(key).unwrap();
+                flatten_json(val, key, key, 0, expanded_paths, &mut rows);
+            }
         }
         serde_json::Value::Array(items) => {
-            if items.is_empty() {
-                view! {
-                    <span class="json-value" style=padding>"[]  0 items"</span>
-                }.into_any()
-            } else if items.len() <= 8 && items.iter().all(|v| !v.is_object() && !v.is_array()) {
-                // Short primitive array - display inline
-                let display = format_json_value(&serde_json::Value::Array(items));
-                view! {
-                    <span class="json-value" style=padding>{display}</span>
-                }.into_any()
-            } else {
-                let count = items.len();
-                view! {
-                    <div class="json-array" style=padding>
-                        {items.into_iter().enumerate().map(move |(i, val)| {
-                            let is_nested = matches!(&val, serde_json::Value::Object(_) | serde_json::Value::Array(_));
-                            if is_nested {
-                                let summary = summarize_value(&val);
-                                let key = format!("[{}]", i);
-                                view! {
-                                    <JsonCollapsible key=key summary=summary value=val indent=0 />
-                                }.into_any()
-                            } else {
-                                let display = format_json_value(&val);
-                                view! {
-                                    <div class="json-field-inline">
-                                        <span class="json-index">{format!("[{}]: ", i)}</span>
-                                        <span class="json-value">{display}</span>
-                                    </div>
-                                }.into_any()
-                            }
-                        }).collect::<Vec<_>>()}
-                    </div>
-                }.into_any()
+            for (i, val) in items.iter().enumerate() {
+                let label = format!("[{}]", i);
+                let path = format!("[{}]", i);
+                flatten_json(val, &label, &path, 0, expanded_paths, &mut rows);
             }
         }
         _ => {
-            let display = format_json_value(&value);
-            view! {
-                <span class="json-value" style=padding>{display}</span>
-            }.into_any()
+            flatten_json(root, "value", "value", 0, expanded_paths, &mut rows);
         }
     }
+    rows
 }
 
-/// Collapsible node — collapsed by default, renders children only when expanded.
 #[component]
-fn JsonCollapsible(
-    key: String,
-    summary: String,
-    value: serde_json::Value,
-    indent: usize,
-) -> impl IntoView {
-    let expanded = RwSignal::new(false);
+fn JsonTree(value: serde_json::Value, #[prop(optional)] indent: usize) -> impl IntoView {
+    let expanded_paths = RwSignal::new(HashSet::<String>::new());
 
-    view! {
-        <div class="json-collapsible">
-            <div
-                class="json-collapsible-header"
-                on:click=move |_| expanded.update(|v| *v = !*v)
-                style="cursor: pointer; user-select: none;"
-            >
-                <span class="json-toggle">{move || if expanded.get() { "▼ " } else { "▶ " }}</span>
-                <span class="json-key">{format!("{}  ", key)}</span>
-                <span class="json-summary">{summary.clone()}</span>
-            </div>
-            {move || {
-                if expanded.get() {
-                    view! {
-                        <div class="json-collapsible-body">
-                            <JsonTree value=value.clone() indent=indent />
-                        </div>
-                    }.into_any()
-                } else {
-                    view! { <div></div> }.into_any()
-                }
-            }}
-        </div>
-    }
-}
+    let value_clone = value.clone();
+    let flat_rows = Memo::new(move |_| {
+        expanded_paths.with(|paths| get_visible_rows(&value_clone, paths))
+    });
 
-/// Generate a short summary for collapsed nested values.
-fn summarize_value(val: &serde_json::Value) -> String {
-    match val {
-        serde_json::Value::Object(map) => format!("{{}}  {} keys", map.len()),
-        serde_json::Value::Array(items) => {
-            if items.is_empty() {
-                "[]  0 items".to_string()
-            } else {
-                format!("[]  {} items", items.len())
+    let scroll_container_ref = NodeRef::<leptos::html::Div>::new();
+    let scroll_top = RwSignal::new(0i32);
+    let container_height = RwSignal::new(400i32);
+
+    // Measure container on mount
+    Effect::new(move |_| {
+        if let Some(el) = scroll_container_ref.get() {
+            let h = el.client_height();
+            if h > 0 {
+                container_height.set(h);
             }
         }
-        _ => String::new(),
+    });
+
+    let on_scroll = move |_| {
+        if let Some(el) = scroll_container_ref.get() {
+            scroll_top.set(el.scroll_top());
+            let h = el.client_height();
+            if h > 0 {
+                container_height.set(h);
+            }
+        }
+    };
+
+    let row_height: i32 = 22;
+
+    view! {
+        <div
+            node_ref=scroll_container_ref
+            on:scroll=on_scroll
+            style="position: relative; overflow-y: auto; height: 100%; width: 100%;"
+        >
+            // Spacer for total scrollable height
+            <div style=move || format!(
+                "height: {}px; width: 100%; pointer-events: none;",
+                flat_rows.with(|r| r.len()) as i32 * row_height
+            )></div>
+
+            // Absolutely positioned visible rows
+            <div style="position: absolute; top: 0; left: 0; width: 100%;">
+                {move || {
+                    let rows = flat_rows.get();
+                    let st = scroll_top.get();
+                    let ch = container_height.get();
+                    let rh = row_height;
+
+                    let start_idx = (st / rh).max(0) as usize;
+                    let visible_count = (ch / rh) as usize + 4;
+                    let end_idx = (start_idx + visible_count).min(rows.len());
+
+                    (start_idx..end_idx).map(|idx| {
+                        let row = rows[idx].clone();
+                        let path = row.path.clone();
+                        let is_expanded = row.is_expanded;
+                        let is_collapsible = row.is_collapsible;
+
+                        let toggle = move |ev: leptos::ev::MouseEvent| {
+                            ev.stop_propagation();
+                            let p = path.clone();
+                            expanded_paths.update(|set| {
+                                if is_expanded {
+                                    set.remove(&p);
+                                } else {
+                                    set.insert(p);
+                                }
+                            });
+                        };
+
+                        let top_px = idx as i32 * rh;
+                        let pad_left = row.indent * 16 + 8;
+
+                        view! {
+                            <div
+                                style=format!(
+                                    "position: absolute; top: {}px; left: 0; width: 100%; height: {}px; display: flex; align-items: center; white-space: nowrap; font-family: monospace; font-size: 12px; padding-left: {}px;",
+                                    top_px, rh, pad_left
+                                )
+                            >
+                                {if is_collapsible {
+                                    view! {
+                                        <span
+                                            on:click=toggle
+                                            style="cursor: pointer; margin-right: 6px; color: #888; user-select: none;"
+                                        >
+                                            {if is_expanded { "▼" } else { "▶" }}
+                                        </span>
+                                    }.into_any()
+                                } else {
+                                    view! { <span style="width: 16px; display: inline-block;"></span> }.into_any()
+                                }}
+                                <span style="color: #9cdcfe; margin-right: 4px;">{row.label}</span>
+                                <span style="color: #ccc; margin-right: 6px;">":"</span>
+                                {if is_collapsible && !is_expanded {
+                                    view! {
+                                        <span style="color: #6a9955; font-style: italic;">{row.summary}</span>
+                                    }.into_any()
+                                } else if is_collapsible && is_expanded {
+                                    view! {
+                                        <span style="color: #ffd700;">
+                                            {if row.value_type == "object" { "{" } else { "[" }}
+                                        </span>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <span style="color: #ce9178;">{row.summary}</span>
+                                    }.into_any()
+                                }}
+                            </div>
+                        }
+                    }).collect::<Vec<_>>()
+                }}
+            </div>
+        </div>
     }
 }
 

@@ -217,6 +217,35 @@ if (!globalThis.__extensionConverters) {
     globalThis.__extensionConverters = {};
 }
 
+// ===== JSON bridge utilities =====
+// Convert snake_case keys to camelCase (required by extension converters)
+function snakeToCamel(str) {
+    return str.replace(/([-_][a-z])/g, group =>
+        group.toUpperCase().replace('-', '').replace('_', '')
+    );
+}
+
+function convertKeysToCamel(obj) {
+    if (Array.isArray(obj)) {
+        return obj.map(convertKeysToCamel);
+    } else if (obj !== null && typeof obj === 'object') {
+        // Special mapping for google.protobuf.Timestamp to Lichtblick format
+        if ('seconds' in obj && 'nanos' in obj) {
+            obj.sec = obj.seconds;
+            obj.nsec = obj.nanos;
+        }
+        const newObj = {};
+        for (const key in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                const camelKey = key.includes('_') ? snakeToCamel(key) : key;
+                newObj[camelKey] = convertKeysToCamel(obj[key]);
+            }
+        }
+        return newObj;
+    }
+    return obj;
+}
+
 export function js_execute_extension(source, extensionId, extensionName) {
     try {
         const module = { exports: {} };
@@ -294,7 +323,18 @@ export function js_get_converter_schemas() {
 
 // Run all converters for a schema with a pre-decoded JS message object.
 // Returns flat array of frame transform objects, or null if no transforms produced.
+// Accepts either a JS object or a JSON string (for the JSON bridge optimization).
 export function js_convert_message_with_object(fromSchemaName, messageObj, topicConfigOverride) {
+    let finalMsgObj = messageObj;
+    if (typeof messageObj === 'string') {
+        try {
+            finalMsgObj = JSON.parse(messageObj);
+        } catch (e) {
+            console.error('[Extension] Failed to parse message JSON:', e);
+            return null;
+        }
+    }
+
     const converters = globalThis.__extensionConverters[fromSchemaName];
     if (!converters || converters.length === 0) return null;
 
@@ -314,7 +354,7 @@ export function js_convert_message_with_object(fromSchemaName, messageObj, topic
         topic: '',
         schemaName: fromSchemaName,
         receiveTime: { sec: 0, nsec: 0 },
-        message: messageObj,
+        message: finalMsgObj,
         sizeInBytes: 0,
         topicConfig,
     };
@@ -322,7 +362,7 @@ export function js_convert_message_with_object(fromSchemaName, messageObj, topic
     const frames = [];
     for (const entry of converters) {
         try {
-            const converted = entry.converter(messageObj, messageEvent, topicConfig, { emitAlert: () => {} });
+            const converted = entry.converter(finalMsgObj, messageEvent, topicConfig, { emitAlert: () => {} });
             if (converted == null) continue;
 
             if (entry.toSchemaName === 'foxglove.FrameTransforms') {
@@ -366,7 +406,18 @@ export function js_convert_message_with_object(fromSchemaName, messageObj, topic
 }
 
 // Returns { cubes: [...], lines: [...] } from SceneUpdate converters, or null.
+// Accepts either a JS object or a JSON string (for the JSON bridge optimization).
 export function js_convert_message_to_scene(fromSchemaName, messageObj, topicConfigOverride) {
+    let finalMsgObj = messageObj;
+    if (typeof messageObj === 'string') {
+        try {
+            finalMsgObj = JSON.parse(messageObj);
+        } catch (e) {
+            console.error('[Extension] Failed to parse message JSON for scene:', e);
+            return null;
+        }
+    }
+
     const converters = globalThis.__extensionConverters[fromSchemaName];
     if (!converters || converters.length === 0) return null;
 
@@ -386,7 +437,7 @@ export function js_convert_message_to_scene(fromSchemaName, messageObj, topicCon
         topic: '',
         schemaName: fromSchemaName,
         receiveTime: { sec: 0, nsec: 0 },
-        message: messageObj,
+        message: finalMsgObj,
         sizeInBytes: 0,
         topicConfig,
     };
@@ -397,7 +448,7 @@ export function js_convert_message_to_scene(fromSchemaName, messageObj, topicCon
     for (const entry of converters) {
         if (entry.toSchemaName !== 'foxglove.SceneUpdate') continue;
         try {
-            const converted = entry.converter(messageObj, messageEvent, topicConfig, { emitAlert: () => {} });
+            const converted = entry.converter(finalMsgObj, messageEvent, topicConfig, { emitAlert: () => {} });
             if (converted == null) continue;
 
             const entities = converted.entities || [];

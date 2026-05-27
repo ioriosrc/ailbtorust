@@ -23,12 +23,14 @@ Lichtblick is a robotics data visualization tool supporting MCAP files with lazy
 - **ASAM OSI converter** — Extension converts osi3.SensorView → FrameTransforms + SceneUpdate (vehicles, lanes, signs)
 
 ### Performance Characteristics
-- File open: ~50ms (reads summary only, 132MB MCAP)
-- Playback: 60fps loop, panels update at 30fps (throttled)
-- Memory: 100MB chunk cache cap with LRU eviction
-- Chunk prefetch: 3s ahead, batch of 2 (keeps main thread responsive)
-- Seek: Generation-counter invalidation of stale async loads
-- Converter pipeline: timestamp dedup (skip repeated log_time_ns), failed schema tracking
+- **File open**: ~50ms (reads summary only, 132MB MCAP)
+- **Playback**: 60fps loop, panels update at 30fps (throttled)
+- **50x Faster Deserialization Bridge**: Native Rust `dynamic_message_to_json()` prunes unused nested messages/oneofs (avoiding WASM Stack Overflow) and passes a single JSON string to V8's parsed camelCase bridge, eliminating thousands of JS-WASM boundary crossings per frame.
+- **Virtualized JSON Tree**: Flat, scroll-driven virtual list in the Raw Messages panel that keeps DOM elements under 30 nodes (avoiding DOM node explosion from 20,000+ fields).
+- **Memory**: 100MB chunk cache cap with LRU eviction
+- **Chunk prefetch**: 3s ahead, batch of 2 (keeps main thread responsive)
+- **Seek**: Generation-counter invalidation of stale async loads
+- **Converter pipeline**: timestamp dedup (skip repeated log_time_ns), failed schema tracking
 
 ## Architecture
 

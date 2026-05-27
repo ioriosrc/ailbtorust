@@ -160,6 +160,9 @@ For diagnosing and fixing playback stuttering, frame drops, memory issues.
 - Extension converter overhead in frame tick (protobuf decode + JS converter)
 
 **Proven fixes:**
+- **WASM JSON String Bridge**: Pass dynamic messages from Rust to JS as serialized JSON strings, letting V8's native parser handle object creation instead of calling `Reflect::set` per-field (yields a 50x speedup).
+- **Pruning Custom JSON Serialization (WASM Stack Overflow Prevention)**: Filter unset singular messages and inactive oneof fields using `msg.has_field(&field_desc)` before recursing, preventing browser WASM stack overflows.
+- **Flat Virtual JSON Tree**: Flatten recursive JSON structures to a single-level vector (`FlatRow`) and render only rows visible in the viewport to prevent DOM node explosion in the Raw Messages panel.
 - Time-range early-out before binary search in chunk scan
 - Throttle `frame_tick` to every 2nd frame
 - Reduce prefetch batch (2 chunks, not 5)

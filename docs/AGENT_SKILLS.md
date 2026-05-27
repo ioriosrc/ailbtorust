@@ -67,7 +67,8 @@ This file defines the skills an AI agent or Copilot should employ when operating
 **Skill**: Efficient communication between Rust/WASM and JavaScript.
 **Context**: The app uses `wasm_bindgen` inline_js for extension bridge, IndexedDB, FileReader, WebGL, and protobufjs.
 **Tasks**:
-- Minimize JS↔WASM boundary crossings (batch operations where possible).
+- Minimize JS↔WASM boundary crossings (batch operations where possible, e.g., passing dynamic messages as serialized JSON strings rather than using `Reflect::set` loop).
+- Avoid WebAssembly Stack Overflow panics during serialization of dynamic messages with cycles/deep nesting by checking `msg.has_field(&field_desc)` to prune unset message/oneof fields.
 - Handle async JS operations (Promises) from Rust via `JsFuture`.
 - Manage `Closure::once` / `Closure::wrap` lifecycle (`.forget()` for persistent callbacks).
 - Debug TypedArray views into WASM memory (invalidated on memory growth).
@@ -76,7 +77,7 @@ This file defines the skills an AI agent or Copilot should employ when operating
 - `JsFuture::from(promise).await` for awaiting JS Promises
 - `serde-wasm-bindgen` for structured data transfer (Vec<u8>, HashMap, etc.)
 - Thread-locals for per-component state (SCENE, TF_STATE, REGISTERED_SCHEMAS)
-- **Protobuf JS Serialization Casing**: To ensure compatibility with custom extensions, protobuf message conversions (`dynamic_message_to_js`) must convert all field names from snake_case to camelCase to match original Lichtblick/protobufjs defaults.
+- **Protobuf JS Serialization Casing**: To ensure compatibility with custom extensions, protobuf message conversions (`dynamic_message_to_json` / `dynamic_message_to_js`) must convert all field names from snake_case to camelCase to match original Lichtblick/protobufjs defaults. This is done on the JS side of the bridge recursively.
 
 ## 7. UI/UX Polishing
 **Skill**: Advanced CSS and WASM DOM manipulation.
