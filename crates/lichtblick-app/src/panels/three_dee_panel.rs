@@ -222,7 +222,7 @@ impl OrbitCamera {
     pub fn rotate(&mut self, dx: f32, dy: f32) {
         self.user_azimuth -= dx * 0.01;
         self.user_elevation += dy * 0.01;
-        self.user_elevation = self.user_elevation.clamp(-1.4, 1.4); // ~±80°
+        self.user_elevation = self.user_elevation.clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
     }
 
     pub fn zoom(&mut self, delta: f32) {
@@ -501,6 +501,7 @@ fn parse_hex_color(hex: &str) -> [f32; 4] {
 #[derive(Clone, Debug)]
 struct SceneCube {
     frame_id: String,
+    entity_id: String,
     px: f32, py: f32, pz: f32,
     ox: f32, oy: f32, oz: f32, ow: f32,
     sx: f32, sy: f32, sz: f32,
@@ -686,6 +687,9 @@ struct SceneState {
     tf_axis_scale: f32,
     tf_line_width: f32,
     tf_line_color: [f32; 3],
+    tf_show_labels: bool,
+    tf_label_size: f32,
+    tf_hidden_frames: std::collections::HashSet<String>,
     // Manual TF offsets (frame_name -> [tx,ty,tz, rx,ry,rz])
     tf_offsets: std::collections::HashMap<String, [f64; 6]>,
     // Current player time for TF lookups
@@ -697,6 +701,10 @@ struct SceneState {
     point_count: i32,
     line_count: i32,
     enable_stats: bool,
+    // Labels
+    label_scale: f32,
+    /// Projected label positions from last render: (screen_x, screen_y, text)
+    projected_labels: Vec<(f32, f32, String)>,
 }
 
 impl SceneState {
@@ -869,6 +877,9 @@ impl SceneState {
             tf_axis_scale: 1.0,
             tf_line_width: 2.0,
             tf_line_color: [1.0, 1.0, 0.0],
+            tf_show_labels: true,
+            tf_label_size: 0.2,
+            tf_hidden_frames: std::collections::HashSet::new(),
             tf_offsets: std::collections::HashMap::new(),
             current_time_ns: 0,
             frame_count: 0,
@@ -877,6 +888,8 @@ impl SceneState {
             point_count: 0,
             line_count: 0,
             enable_stats: false,
+            label_scale: 1.0,
+            projected_labels: Vec::new(),
         })
     }
 
@@ -1338,6 +1351,62 @@ impl SceneState {
                 }
             }
         });
+
+        // Project TF frame positions to screen space for labels
+        // Only show labels for the display frame and its subtree (ego vehicle frames)
+        self.projected_labels.clear();
+        if self.tf_show_labels && self.label_scale > 0.0 && !display_frame.is_empty() {
+            let w = self.canvas_width as f32;
+            let h = self.canvas_height as f32;
+            let axis_length = 0.2 * self.tf_axis_scale;
+            let label_offset_z = axis_length + self.tf_label_size * self.label_scale * 1.5;
+
+            TF_STATE.with(|tree| {
+                let tf = tree.borrow();
+
+                // Collect display frame + all descendants
+                let mut label_frames = vec![display_frame.clone()];
+                let mut queue = vec![display_frame.clone()];
+                while let Some(parent) = queue.pop() {
+                    for child in tf.get_children(&parent) {
+                        if !self.tf_hidden_frames.contains(&child) {
+                            label_frames.push(child.clone());
+                            queue.push(child);
+                        }
+                    }
+                }
+
+                for frame in &label_frames {
+                    if self.tf_hidden_frames.contains(frame) {
+                        continue;
+                    }
+
+                    if let Some(transform) = tf.lookup(&display_frame, frame, time_ns) {
+                        let mat = transform.to_mat4_f32();
+                        // Frame origin + label offset above (local Z axis of frame)
+                        let fx = mat[12] + mat[8] * label_offset_z;
+                        let fy = mat[13] + mat[9] * label_offset_z;
+                        let fz = mat[14] + mat[10] * label_offset_z;
+
+                        // Project to clip space
+                        let cx = vp.data[0] * fx + vp.data[4] * fy + vp.data[8] * fz + vp.data[12];
+                        let cy = vp.data[1] * fx + vp.data[5] * fy + vp.data[9] * fz + vp.data[13];
+                        let cw = vp.data[3] * fx + vp.data[7] * fy + vp.data[11] * fz + vp.data[15];
+
+                        if cw <= 0.01 { continue; }
+
+                        let ndc_x = cx / cw;
+                        let ndc_y = cy / cw;
+                        let sx = (ndc_x * 0.5 + 0.5) * w;
+                        let sy = (1.0 - (ndc_y * 0.5 + 0.5)) * h;
+
+                        if sx >= -100.0 && sx <= w + 100.0 && sy >= -50.0 && sy <= h + 50.0 {
+                            self.projected_labels.push((sx, sy, frame.clone()));
+                        }
+                    }
+                }
+            });
+        }
 
         self.line_count = total_lines;
 
@@ -1952,6 +2021,7 @@ fn parse_scene_update_result(result: &JsValue) -> (Vec<SceneCube>, Vec<SceneLine
                 let c = arr.get(i);
                 cubes.push(SceneCube {
                     frame_id: get_str(&c, "frame_id"),
+                    entity_id: get_str(&c, "entity_id"),
                     px: get_f32(&c, "px"), py: get_f32(&c, "py"), pz: get_f32(&c, "pz"),
                     ox: get_f32(&c, "ox"), oy: get_f32(&c, "oy"), oz: get_f32(&c, "oz"),
                     ow: {
@@ -2119,7 +2189,13 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let point_count = RwSignal::new(0i32);
     let fps_signal = RwSignal::new(0.0f32);
+    let frame_time_signal = RwSignal::new(0.0f32);
     let line_count_signal = RwSignal::new(0i32);
+    let cube_count_signal = RwSignal::new(0usize);
+    let scene_line_count_signal = RwSignal::new(0usize);
+    let tri_count_signal = RwSignal::new(0usize);
+    let labels_signal: RwSignal<Vec<(f32, f32, String)>> = RwSignal::new(Vec::new());
+    let label_scale_signal = RwSignal::new(1.0f32);
 
     // Timestamp cache: skip re-processing messages that haven't changed
     let last_processed_times = RwSignal::new(std::collections::HashMap::<String, u64>::new());
@@ -2370,6 +2446,12 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             // Rust elevation = angle from horizontal (0=horizontal, π/2=top-down)
             // So: elevation = 90° - phi
             s.camera.user_elevation = ((90.0 - cfg.view.phi as f32).to_radians()).clamp(-1.4, 1.4);
+
+            // When perspective is OFF (orthographic), force top-down aerial view
+            if !cfg.view.perspective {
+                s.camera.user_elevation = std::f32::consts::FRAC_PI_2; // 90° = straight down
+            }
+
             // targetOffset = orbit center offset (user pan)
             s.camera.user_target = Vec3::new(
                 cfg.view.target_offset[0] as f32,
@@ -2383,9 +2465,15 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             // Render stats
             s.enable_stats = cfg.scene.enable_stats;
 
+            // Label scale
+            s.label_scale = cfg.scene.label_scale as f32;
+
             // Transforms visual config
             s.tf_axis_scale = cfg.transforms.axis_scale as f32;
             s.tf_line_width = cfg.transforms.line_width as f32;
+            s.tf_show_labels = cfg.transforms.show_labels;
+            s.tf_label_size = cfg.transforms.label_size as f32;
+            s.tf_hidden_frames = cfg.transforms.hidden_frames.clone();
             // Parse transforms line color
             let lhex = cfg.transforms.line_color.trim_start_matches('#');
             if lhex.len() == 6 {
@@ -2691,13 +2779,28 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
         with_scene(|s| {
             point_count.set(s.point_count);
             fps_signal.set(s.fps);
+            frame_time_signal.set(if s.fps > 0.0 { 1000.0 / s.fps } else { 0.0 });
             line_count_signal.set(s.line_count);
+            label_scale_signal.set(s.label_scale);
+            if s.label_scale > 0.0 && !s.projected_labels.is_empty() {
+                labels_signal.set(s.projected_labels.clone());
+            } else {
+                labels_signal.set(Vec::new());
+            }
         });
+        // Entity counts from SCENE_ENTITIES
+        let (cubes, lines, tris) = SCENE_ENTITIES.with(|ent| {
+            let e = ent.borrow();
+            (e.0.len(), e.1.len(), e.2.len())
+        });
+        cube_count_signal.set(cubes);
+        scene_line_count_signal.set(lines);
+        tri_count_signal.set(tris);
     });
 
-    // Stats visibility from config
+    // Stats visibility from config (tracked for reactivity)
     let show_stats = move || {
-        layout.get_three_dee_config(node_id).scene.enable_stats
+        layout.get_three_dee_config_tracked(node_id).scene.enable_stats
     };
 
     let on_mouseup_clone = on_mouseup.clone();
@@ -2717,16 +2820,37 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             {move || {
                 if show_stats() {
                     Some(view! {
-                        <div class="render-stats-overlay" style="position:absolute; top:4px; left:4px; background:rgba(0,0,0,0.7); color:#0f0; font-family:monospace; font-size:11px; padding:4px 8px; border-radius:4px; pointer-events:none; z-index:10;">
-                            <div>{move || format!("FPS: {:.0}", fps_signal.get())}</div>
-                            <div>{move || format!("Points: {}", point_count.get())}</div>
-                            <div>{move || format!("Lines: {}", line_count_signal.get())}</div>
+                        <div class="render-stats-overlay" style="position:absolute; top:10px; left:10px; background:rgba(30,26,47,0.9); color:#9480ed; font-family:monospace; font-size:11px; padding:6px 10px; border-radius:4px; pointer-events:none; z-index:10; line-height:1.6; min-width:120px;">
+                            <div style="color:#9480ed; font-weight:bold;">{move || format!("{:.1} ms", frame_time_signal.get())}</div>
+                            <div style="color:#0f0;">{move || format!("{:.0} fps", fps_signal.get())}</div>
+                            <div style="color:cyan;">{move || format!("{} cubes", cube_count_signal.get())}</div>
+                            <div style="color:yellow;">{move || format!("{} lines", scene_line_count_signal.get())}</div>
+                            <div style="color:#f08;">{move || format!("{} tris", tri_count_signal.get())}</div>
+                            <div style="color:#aaa;">{move || format!("{} points", point_count.get())}</div>
                         </div>
                     })
                 } else {
                     None
                 }
             }}
+            // Label overlay
+            <div style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:5; overflow:hidden;">
+                {move || {
+                    let scale = label_scale_signal.get();
+                    let lbls = labels_signal.get();
+                    if scale <= 0.0 || lbls.is_empty() {
+                        return Vec::new();
+                    }
+                    let font_size = (12.0 * scale).max(6.0).min(72.0);
+                    lbls.iter().map(|(sx, sy, text)| {
+                        let style = format!(
+                            "position:absolute; left:{}px; top:{}px; transform:translate(-50%,-100%); font-size:{:.1}px; color:white; text-shadow:0 0 3px black, 0 0 6px black; font-family:sans-serif; white-space:nowrap; pointer-events:none;",
+                            sx, sy, font_size
+                        );
+                        view! { <span style=style>{text.clone()}</span> }
+                    }).collect::<Vec<_>>()
+                }}
+            </div>
         </div>
     }
 }

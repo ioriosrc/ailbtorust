@@ -403,6 +403,7 @@ export function js_convert_message_to_scene(fromSchemaName, messageObj, topicCon
             const entities = converted.entities || [];
             for (const entity of entities) {
                 const frame_id = entity.frame_id || '';
+                const entity_id = entity.id || '';
 
                 // Extract cubes
                 if (entity.cubes) {
@@ -413,6 +414,7 @@ export function js_convert_message_to_scene(fromSchemaName, messageObj, topicCon
                         const col = c.color || {};
                         cubes.push({
                             frame_id,
+                            entity_id,
                             px: pos.x || 0, py: pos.y || 0, pz: pos.z || 0,
                             ox: ori.x || 0, oy: ori.y || 0, oz: ori.z || 0, ow: ori.w != null ? ori.w : 1,
                             sx: sz.x || 1, sy: sz.y || 1, sz: sz.z || 1,

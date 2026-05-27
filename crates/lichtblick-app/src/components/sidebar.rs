@@ -1664,7 +1664,7 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
     let publish_open = RwSignal::new(false);
 
     // Reactive config reader
-    let config = move || layout.get_three_dee_config(node_id);
+    let config = move || layout.get_three_dee_config_tracked(node_id);
 
     let frames = move || state.tf_frames.get();
     let current_display_frame = move || state.display_frame.get();
@@ -2004,9 +2004,9 @@ fn ThreeDeeSettings(node_id: NodeId) -> impl IntoView {
                     <label class="settings-label">{"Perspective"}</label>
                     <div class="toggle-group">
                         <button class="toggle-btn" class:active=move || !config().view.perspective
-                            on:click=move |_| on_perspective_change(false)>{"Ortho"}</button>
+                            on:click=move |_| on_perspective_change(false)>{"Off"}</button>
                         <button class="toggle-btn" class:active=move || config().view.perspective
-                            on:click=move |_| on_perspective_change(true)>{"Persp"}</button>
+                            on:click=move |_| on_perspective_change(true)>{"On"}</button>
                     </div>
                 </div>
                 <div class="settings-row">

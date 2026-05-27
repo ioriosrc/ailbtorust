@@ -434,6 +434,14 @@ impl TfTree {
         self.parents.get(child).cloned()
     }
 
+    /// Get all children of a given parent frame.
+    pub fn get_children(&self, parent: &str) -> Vec<String> {
+        self.parents.iter()
+            .filter(|(_, p)| p.as_str() == parent)
+            .map(|(child, _)| child.clone())
+            .collect()
+    }
+
     /// Get the number of buffered transforms for a parent→child pair.
     pub fn get_history_size(&self, parent: &str, child: &str) -> usize {
         let key = (parent.to_string(), child.to_string());
