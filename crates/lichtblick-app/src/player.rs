@@ -1143,11 +1143,8 @@ fn tick_and_reschedule(
             TimeFormat::SEC => format_timestamp_secs(current),
         };
         app_state.current_time_display.set(formatted);
-        // Throttle frame_tick to every other frame (~30fps panel updates)
-        // This halves the reactive work while keeping time/progress smooth at 60fps
-        if frame % 2 == 0 {
-            app_state.frame_tick.set(frame);
-        }
+        // Fire frame_tick on every frame directly (no throttle, no setTimeout leak)
+        app_state.frame_tick.set(frame);
     }
 
     // Update URL time parameter outside the render-critical path.

@@ -98,54 +98,20 @@
   },
   "suites": [
     {
-      "title": "app.spec.ts",
-      "file": "app.spec.ts",
+      "title": "verify.3d.spec.ts",
+      "file": "verify.3d.spec.ts",
       "column": 0,
       "line": 0,
       "specs": [],
       "suites": [
         {
-          "title": "App Load",
-          "file": "app.spec.ts",
-          "line": 8,
+          "title": "3D Panel E2E Validation",
+          "file": "verify.3d.spec.ts",
+          "line": 7,
           "column": 6,
           "specs": [
             {
-              "title": "loads without errors",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "rust",
-                  "projectName": "rust",
-                  "results": [
-                    {
-                      "workerIndex": 0,
-                      "parallelIndex": 0,
-                      "status": "passed",
-                      "duration": 3255,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-05-27T10:21:15.333Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "expected"
-                }
-              ],
-              "id": "c31ff144dc4fee3acd0a-4cfc5eccbef596cc9ed5",
-              "file": "app.spec.ts",
-              "line": 9,
-              "column": 7
-            },
-            {
-              "title": "canvas renders",
+              "title": "installs extension, loads MCAP, plays, and verifies 3D rendering",
               "ok": false,
               "tags": [],
               "tests": [
@@ -160,256 +126,75 @@
                       "workerIndex": 0,
                       "parallelIndex": 0,
                       "status": "failed",
-                      "duration": 10407,
+                      "duration": 10316,
                       "error": {
-                        "message": "TimeoutError: page.waitForSelector: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas') to be visible\u001b[22m\n",
-                        "stack": "TimeoutError: page.waitForSelector: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas') to be visible\u001b[22m\n\n    at /Users/CTW03722/git/ailbtorust/e2e/tests/app.spec.ts:23:16",
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mnot\u001b[2m.\u001b[22mtoContain\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // indexOf\u001b[22m\n\nExpected value: not \u001b[32m\"(no frames)\"\u001b[39m\nReceived array:     \u001b[31m[\u001b[7m\"(no frames)\"\u001b[27m]\u001b[39m",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mnot\u001b[2m.\u001b[22mtoContain\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // indexOf\u001b[22m\n\nExpected value: not \u001b[32m\"(no frames)\"\u001b[39m\nReceived array:     \u001b[31m[\u001b[7m\"(no frames)\"\u001b[27m]\u001b[39m\n    at /Users/CTW03722/git/ailbtorust/e2e/tests/verify.3d.spec.ts:59:25",
                         "location": {
-                          "file": "/Users/CTW03722/git/ailbtorust/e2e/tests/app.spec.ts",
-                          "column": 16,
-                          "line": 23
+                          "file": "/Users/CTW03722/git/ailbtorust/e2e/tests/verify.3d.spec.ts",
+                          "column": 25,
+                          "line": 59
                         },
-                        "snippet": "  21 |   test(\"canvas renders\", async ({ page, baseURL }) => {\n  22 |     await page.goto(baseURL!);\n> 23 |     await page.waitForSelector(\"canvas\", { timeout: 10000 });\n     |                ^\n  24 |\n  25 |     const canvas = page.locator(\"canvas\").first();\n  26 |     const box = await canvas.boundingBox();"
+                        "snippet": "  57 |\n  58 |     expect(options.length).toBeGreaterThan(0);\n> 59 |     expect(options).not.toContain(\"(no frames)\");\n     |                         ^\n  60 |     expect(options).toContain(\"ego_vehicle_bb_center\");\n  61 |\n  62 |     // 7. Verify WebGL2 canvas rendering is not a black screen or blank background"
                       },
                       "errors": [
                         {
                           "location": {
-                            "file": "/Users/CTW03722/git/ailbtorust/e2e/tests/app.spec.ts",
-                            "column": 16,
-                            "line": 23
+                            "file": "/Users/CTW03722/git/ailbtorust/e2e/tests/verify.3d.spec.ts",
+                            "column": 25,
+                            "line": 59
                           },
-                          "message": "TimeoutError: page.waitForSelector: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas') to be visible\u001b[22m\n\n\n  21 |   test(\"canvas renders\", async ({ page, baseURL }) => {\n  22 |     await page.goto(baseURL!);\n> 23 |     await page.waitForSelector(\"canvas\", { timeout: 10000 });\n     |                ^\n  24 |\n  25 |     const canvas = page.locator(\"canvas\").first();\n  26 |     const box = await canvas.boundingBox();\n    at /Users/CTW03722/git/ailbtorust/e2e/tests/app.spec.ts:23:16"
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mnot\u001b[2m.\u001b[22mtoContain\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // indexOf\u001b[22m\n\nExpected value: not \u001b[32m\"(no frames)\"\u001b[39m\nReceived array:     \u001b[31m[\u001b[7m\"(no frames)\"\u001b[27m]\u001b[39m\n\n  57 |\n  58 |     expect(options.length).toBeGreaterThan(0);\n> 59 |     expect(options).not.toContain(\"(no frames)\");\n     |                         ^\n  60 |     expect(options).toContain(\"ego_vehicle_bb_center\");\n  61 |\n  62 |     // 7. Verify WebGL2 canvas rendering is not a black screen or blank background\n    at /Users/CTW03722/git/ailbtorust/e2e/tests/verify.3d.spec.ts:59:25"
                         }
                       ],
-                      "stdout": [],
+                      "stdout": [
+                        {
+                          "text": "Extension installed successfully.\n"
+                        },
+                        {
+                          "text": "MCAP file loaded successfully.\n"
+                        },
+                        {
+                          "text": "Playback started. Waiting 5s for frames to process...\n"
+                        },
+                        {
+                          "text": "Display Frame options found: [ \u001b[32m'(no frames)'\u001b[39m ]\n"
+                        }
+                      ],
                       "stderr": [],
                       "retry": 0,
-                      "startTime": "2026-05-27T10:21:21.216Z",
+                      "startTime": "2026-05-27T13:07:31.556Z",
                       "annotations": [],
                       "attachments": [
                         {
                           "name": "screenshot",
                           "contentType": "image/png",
-                          "path": "/Users/CTW03722/git/ailbtorust/e2e/test-results/app-App-Load-canvas-renders-rust/test-failed-1.png"
+                          "path": "/Users/CTW03722/git/ailbtorust/e2e/test-results/verify.3d-3D-Panel-E2E-Val-09445-s-and-verifies-3D-rendering-rust/test-failed-1.png"
                         },
                         {
                           "name": "video",
                           "contentType": "video/webm",
-                          "path": "/Users/CTW03722/git/ailbtorust/e2e/test-results/app-App-Load-canvas-renders-rust/video.webm"
+                          "path": "/Users/CTW03722/git/ailbtorust/e2e/test-results/verify.3d-3D-Panel-E2E-Val-09445-s-and-verifies-3D-rendering-rust/video.webm"
                         },
                         {
                           "name": "error-context",
                           "contentType": "text/markdown",
-                          "path": "/Users/CTW03722/git/ailbtorust/e2e/test-results/app-App-Load-canvas-renders-rust/error-context.md"
+                          "path": "/Users/CTW03722/git/ailbtorust/e2e/test-results/verify.3d-3D-Panel-E2E-Val-09445-s-and-verifies-3D-rendering-rust/error-context.md"
                         }
                       ],
                       "errorLocation": {
-                        "file": "/Users/CTW03722/git/ailbtorust/e2e/tests/app.spec.ts",
-                        "column": 16,
-                        "line": 23
+                        "file": "/Users/CTW03722/git/ailbtorust/e2e/tests/verify.3d.spec.ts",
+                        "column": 25,
+                        "line": 59
                       }
                     }
                   ],
                   "status": "unexpected"
                 }
               ],
-              "id": "c31ff144dc4fee3acd0a-ca04f65eb64215644ff3",
-              "file": "app.spec.ts",
-              "line": 21,
-              "column": 7
-            }
-          ]
-        },
-        {
-          "title": "Sidebar",
-          "file": "app.spec.ts",
-          "line": 33,
-          "column": 6,
-          "specs": [
-            {
-              "title": "shows Panel tab",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "rust",
-                  "projectName": "rust",
-                  "results": [
-                    {
-                      "workerIndex": 1,
-                      "parallelIndex": 0,
-                      "status": "passed",
-                      "duration": 2187,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-05-27T10:21:31.913Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "expected"
-                }
-              ],
-              "id": "c31ff144dc4fee3acd0a-4c245f9d422492fdc912",
-              "file": "app.spec.ts",
-              "line": 34,
-              "column": 7
-            },
-            {
-              "title": "shows Topics tab",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "rust",
-                  "projectName": "rust",
-                  "results": [
-                    {
-                      "workerIndex": 1,
-                      "parallelIndex": 0,
-                      "status": "passed",
-                      "duration": 2180,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-05-27T10:21:34.199Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "expected"
-                }
-              ],
-              "id": "c31ff144dc4fee3acd0a-ddb8cef80771f972f6b8",
-              "file": "app.spec.ts",
-              "line": 43,
-              "column": 7
-            },
-            {
-              "title": "shows Layouts tab",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "rust",
-                  "projectName": "rust",
-                  "results": [
-                    {
-                      "workerIndex": 1,
-                      "parallelIndex": 0,
-                      "status": "passed",
-                      "duration": 2171,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-05-27T10:21:36.384Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "expected"
-                }
-              ],
-              "id": "c31ff144dc4fee3acd0a-20cddce477be277170e1",
-              "file": "app.spec.ts",
-              "line": 51,
-              "column": 7
-            }
-          ]
-        },
-        {
-          "title": "3D Panel Settings",
-          "file": "app.spec.ts",
-          "line": 60,
-          "column": 6,
-          "specs": [
-            {
-              "title": "Transforms section exists when data loaded",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "rust",
-                  "projectName": "rust",
-                  "results": [
-                    {
-                      "workerIndex": 1,
-                      "parallelIndex": 0,
-                      "status": "passed",
-                      "duration": 5244,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-05-27T10:21:38.559Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "expected"
-                }
-              ],
-              "id": "c31ff144dc4fee3acd0a-78318c155157bb9bcb69",
-              "file": "app.spec.ts",
-              "line": 61,
-              "column": 7
-            }
-          ]
-        },
-        {
-          "title": "Playback Controls",
-          "file": "app.spec.ts",
-          "line": 73,
-          "column": 6,
-          "specs": [
-            {
-              "title": "play/pause button exists",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 60000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "rust",
-                  "projectName": "rust",
-                  "results": [
-                    {
-                      "workerIndex": 1,
-                      "parallelIndex": 0,
-                      "status": "passed",
-                      "duration": 2159,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-05-27T10:21:43.808Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "expected"
-                }
-              ],
-              "id": "c31ff144dc4fee3acd0a-733fbc0467aabb3615d9",
-              "file": "app.spec.ts",
-              "line": 74,
+              "id": "843f25cbd53d8765df26-9bcc6596565254641d63",
+              "file": "verify.3d.spec.ts",
+              "line": 8,
               "column": 7
             }
           ]
@@ -419,9 +204,9 @@
   ],
   "errors": [],
   "stats": {
-    "startTime": "2026-05-27T10:21:15.048Z",
-    "duration": 30960.601,
-    "expected": 6,
+    "startTime": "2026-05-27T13:07:31.147Z",
+    "duration": 11115.412,
+    "expected": 0,
     "skipped": 0,
     "unexpected": 1,
     "flaky": 0

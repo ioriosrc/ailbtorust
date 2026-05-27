@@ -709,6 +709,10 @@ struct SceneState {
     label_scale: f32,
     /// Projected label positions from last render: (screen_x, screen_y, text)
     projected_labels: Vec<(f32, f32, String)>,
+    // Camera smoothing: lerp actual camera toward target each frame
+    smooth_target: Vec3,
+    smooth_azimuth: f32,
+    last_render_time_ms: f64,
 }
 
 impl SceneState {
@@ -896,6 +900,9 @@ impl SceneState {
             tf_cache: std::collections::HashMap::new(),
             label_scale: 1.0,
             projected_labels: Vec::new(),
+            smooth_target: Vec3::new(0.0, 0.0, 0.0),
+            smooth_azimuth: (-135.0f32).to_radians(),
+            last_render_time_ms: 0.0,
         })
     }
 
@@ -1085,9 +1092,39 @@ impl SceneState {
             });
         }
 
+        // === Camera smoothing: lerp smooth values toward computed target ===
+        let now_ms = js_sys::Date::now();
+        let dt_ms = if self.last_render_time_ms > 0.0 {
+            (now_ms - self.last_render_time_ms).clamp(0.0, 50.0)
+        } else {
+            16.0
+        };
+        self.last_render_time_ms = now_ms;
+        // Smooth factor: τ=40ms gives smooth catch-up over ~100ms data intervals.
+        // At 60fps (dt=16ms): alpha ≈ 0.33 → smooth exponential ease toward target.
+        let alpha = 1.0 - (-dt_ms as f32 / 40.0).exp();
+        self.smooth_target.x += (self.camera.target.x - self.smooth_target.x) * alpha;
+        self.smooth_target.y += (self.camera.target.y - self.smooth_target.y) * alpha;
+        self.smooth_target.z += (self.camera.target.z - self.smooth_target.z) * alpha;
+        // Azimuth smoothing (handle angle wrapping)
+        let mut az_diff = self.camera.azimuth - self.smooth_azimuth;
+        if az_diff > std::f32::consts::PI { az_diff -= 2.0 * std::f32::consts::PI; }
+        if az_diff < -std::f32::consts::PI { az_diff += 2.0 * std::f32::consts::PI; }
+        self.smooth_azimuth += az_diff * alpha;
+
+        // Use smoothed values for rendering
+        let saved_target = self.camera.target;
+        let saved_azimuth = self.camera.azimuth;
+        self.camera.target = self.smooth_target;
+        self.camera.azimuth = self.smooth_azimuth;
+
         let view = self.camera.view_matrix();
         let proj = self.camera.projection_matrix(aspect);
         let vp = proj.multiply(&view);
+
+        // Restore actual camera values (so next frame's follow mode computes from true position)
+        self.camera.target = saved_target;
+        self.camera.azimuth = saved_azimuth;
 
         // Draw grids (each in its own frame)
         let mut total_lines = 0i32;
@@ -1897,14 +1934,21 @@ fn dynamic_message_to_js(msg: &prost_reflect::DynamicMessage) -> JsValue {
     obj.into()
 }
 
-/// Serialize a DynamicMessage to a JSON string using snake_case field names.
-/// This is 10-50x faster than `dynamic_message_to_js` because it avoids
-/// thousands of Reflect::set calls across the WASM-JS boundary.
+
+/// Serialize a DynamicMessage to a JSON string with snake_case field names.
+/// Uses native protobuf field names (snake_case) as expected by JS converters.
 /// V8's native JSON.parse on the JS side is highly optimized.
 fn dynamic_message_to_json(msg: &prost_reflect::DynamicMessage) -> String {
-    let mut buf = String::with_capacity(8192);
-    write_message_json(msg, &mut buf);
-    buf
+    // Reuse a thread-local buffer to avoid 2.4MB allocation per frame.
+    thread_local! {
+        static JSON_BUF: std::cell::RefCell<String> = std::cell::RefCell::new(String::with_capacity(3_000_000));
+    }
+    JSON_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        write_message_json(msg, &mut buf);
+        buf.clone()
+    })
 }
 
 fn write_message_json(msg: &prost_reflect::DynamicMessage, buf: &mut String) {
@@ -1912,7 +1956,7 @@ fn write_message_json(msg: &prost_reflect::DynamicMessage, buf: &mut String) {
 
     let desc = msg.descriptor();
 
-    // Special handling for google.protobuf.Timestamp: output {sec, nsec}
+    // Special handling for google.protobuf.Timestamp: output both sec/nsec and seconds/nanos
     if desc.full_name() == "google.protobuf.Timestamp" {
         let mut sec: i64 = 0;
         let mut nsec: i32 = 0;
@@ -1927,6 +1971,10 @@ fn write_message_json(msg: &prost_reflect::DynamicMessage, buf: &mut String) {
         buf.push_str("{\"sec\":");
         buf.push_str(&sec.to_string());
         buf.push_str(",\"nsec\":");
+        buf.push_str(&nsec.to_string());
+        buf.push_str(",\"seconds\":");
+        buf.push_str(&sec.to_string());
+        buf.push_str(",\"nanos\":");
         buf.push_str(&nsec.to_string());
         buf.push('}');
         return;
@@ -1947,8 +1995,9 @@ fn write_message_json(msg: &prost_reflect::DynamicMessage, buf: &mut String) {
             }
         }
 
-        let name = field_desc.name(); // snake_case (protobuf field name)
         let value = msg.get_field(&field_desc);
+
+        let name = field_desc.name(); // snake_case (protobuf field name)
         if !first { buf.push(','); }
         first = false;
         buf.push('"');
@@ -1959,22 +2008,39 @@ fn write_message_json(msg: &prost_reflect::DynamicMessage, buf: &mut String) {
     buf.push('}');
 }
 
+/// Convert a snake_case protobuf field name to camelCase, writing directly to buf.
+/// Zero-allocation: no intermediate String created.
+fn write_camel_case(snake: &str, buf: &mut String) {
+    let mut uppercase = false;
+    for c in snake.chars() {
+        if c == '_' {
+            uppercase = true;
+        } else if uppercase {
+            buf.push(c.to_ascii_uppercase());
+            uppercase = false;
+        } else {
+            buf.push(c);
+        }
+    }
+}
+
 fn write_value_json(value: &prost_reflect::Value, field_desc: &prost_reflect::FieldDescriptor, buf: &mut String) {
     use prost_reflect::Value;
+    use std::fmt::Write;
 
     match value {
         Value::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
-        Value::I32(n) => buf.push_str(&n.to_string()),
-        Value::I64(n) => buf.push_str(&n.to_string()),
-        Value::U32(n) => buf.push_str(&n.to_string()),
-        Value::U64(n) => buf.push_str(&n.to_string()),
+        Value::I32(n) => { let _ = write!(buf, "{}", n); }
+        Value::I64(n) => { let _ = write!(buf, "{}", n); }
+        Value::U32(n) => { let _ = write!(buf, "{}", n); }
+        Value::U64(n) => { let _ = write!(buf, "{}", n); }
         Value::F32(n) => {
-            if n.is_nan() || n.is_infinite() { buf.push_str("0"); }
-            else { buf.push_str(&n.to_string()); }
+            if n.is_nan() || n.is_infinite() { buf.push('0'); }
+            else { let _ = write!(buf, "{}", n); }
         }
         Value::F64(n) => {
-            if n.is_nan() || n.is_infinite() { buf.push_str("0"); }
-            else { buf.push_str(&n.to_string()); }
+            if n.is_nan() || n.is_infinite() { buf.push('0'); }
+            else { let _ = write!(buf, "{}", n); }
         }
         Value::String(s) => {
             buf.push('"');
@@ -1994,15 +2060,20 @@ fn write_value_json(value: &prost_reflect::Value, field_desc: &prost_reflect::Fi
             buf.push('"');
         }
         Value::Bytes(b) => {
-            // Output as array of numbers (compatible with Uint8Array semantics)
-            buf.push('[');
-            for (i, byte) in b.iter().enumerate() {
-                if i > 0 { buf.push(','); }
-                buf.push_str(&byte.to_string());
+            // Skip large byte arrays (sensor raw data) — converters don't need them.
+            // Output length indicator for small ones, empty string for large.
+            if b.len() <= 64 {
+                buf.push('[');
+                for (i, byte) in b.iter().enumerate() {
+                    if i > 0 { buf.push(','); }
+                    let _ = write!(buf, "{}", byte);
+                }
+                buf.push(']');
+            } else {
+                buf.push_str("\"\"");
             }
-            buf.push(']');
         }
-        Value::EnumNumber(n) => buf.push_str(&n.to_string()),
+        Value::EnumNumber(n) => { let _ = write!(buf, "{}", n); }
         Value::Message(nested_msg) => {
             write_message_json(nested_msg, buf);
         }
@@ -2032,10 +2103,10 @@ fn write_value_json(value: &prost_reflect::Value, field_desc: &prost_reflect::Fi
                         }
                     }
                     prost_reflect::MapKey::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
-                    prost_reflect::MapKey::I32(n) => buf.push_str(&n.to_string()),
-                    prost_reflect::MapKey::I64(n) => buf.push_str(&n.to_string()),
-                    prost_reflect::MapKey::U32(n) => buf.push_str(&n.to_string()),
-                    prost_reflect::MapKey::U64(n) => buf.push_str(&n.to_string()),
+                    prost_reflect::MapKey::I32(n) => { let _ = write!(buf, "{}", n); }
+                    prost_reflect::MapKey::I64(n) => { let _ = write!(buf, "{}", n); }
+                    prost_reflect::MapKey::U32(n) => { let _ = write!(buf, "{}", n); }
+                    prost_reflect::MapKey::U64(n) => { let _ = write!(buf, "{}", n); }
                 }
                 buf.push_str("\":");
                 write_value_json(val, field_desc, buf);
@@ -2569,7 +2640,6 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
         let selected = state.display_frame.get();
         with_scene_mut(|s| {
             s.set_display_frame(selected);
-            s.render();
         });
     });
 
@@ -2761,11 +2831,17 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             // Limit batch size to avoid freezing on first load (3001 messages × 500KB proto = too much)
             let current_time_ns = player.current_time_ns();
             let last_time = last_processed_times.get_untracked().get(&topic_info.name).copied().unwrap_or(0);
-            if last_time >= current_time_ns {
+            // On seek backward, reset last_processed_time for this topic
+            if current_time_ns < last_time {
+                last_processed_times.update(|map| {
+                    map.remove(&topic_info.name);
+                });
+            } else if last_time >= current_time_ns {
                 continue;
             }
-            // Get messages from (last_time+1) to current_time
-            let range_start = if last_time > 0 { last_time + 1 } else { 0 };
+            // Get messages from (last_time+1) to current_time, or from 0 after seek
+            let effective_last = last_processed_times.get_untracked().get(&topic_info.name).copied().unwrap_or(0);
+            let range_start = if effective_last > 0 { effective_last + 1 } else { 0 };
             let mut messages = player.get_messages_in_range(&topic_info.name, range_start, current_time_ns);
             if messages.is_empty() {
                 continue;
@@ -2786,105 +2862,101 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
 
             // Process each message in the range
             for msg in messages.iter() {
+
                 // Decode protobuf in Rust using prost-reflect
-                let js_obj = PROTO_POOLS.with(|pools| {
+                let dynamic_msg_opt = PROTO_POOLS.with(|pools| {
                     let pools_ref = pools.borrow();
                     let pool = match pools_ref.get(&topic_info.schema_name) {
                         Some(p) => p,
-                        None => {
-                            return None;
-                        }
+                        None => return None,
                     };
                     let message_desc = match pool.get_message_by_name(&topic_info.schema_name) {
                         Some(d) => d,
-                        None => {
-                            return None;
-                        }
+                        None => return None,
                     };
                     match prost_reflect::DynamicMessage::decode(message_desc, msg.data.as_slice()) {
-                        Ok(dynamic_msg) => {
-                            // Serialize to JSON string with snake_case keys — V8's JSON.parse
-                            // is much faster than thousands of Reflect::set calls across WASM-JS
-                            let json_str = dynamic_message_to_json(&dynamic_msg);
-                            Some(JsValue::from_str(&json_str))
-                        }
+                        Ok(dm) => Some(dm),
                         Err(_) => None,
                     }
                 });
 
-                if let Some(message_obj) = js_obj {
-                    // Serialize topic-specific config for the converter
-                    let topic_cfg = cfg.topics.get(&topic_info.name).cloned().unwrap_or_default();
-                    let config_js = serde_wasm_bindgen::to_value(&topic_cfg).unwrap_or(JsValue::NULL);
+                let dynamic_msg = match dynamic_msg_opt {
+                    Some(dm) => dm,
+                    None => continue,
+                };
 
-                    // Call FrameTransforms converter
-                    let result = js_convert_message_with_object(&topic_info.schema_name, message_obj.clone(), config_js.clone());
+                // Serialize to JSON for JS converters
+                let json_str = dynamic_message_to_json(&dynamic_msg);
+                let message_obj = JsValue::from_str(&json_str);
 
-                    if !result.is_null() && !result.is_undefined() {
-                        if let Ok(array) = js_sys::Array::try_from(result) {
-                            for i in 0..array.length() {
-                                let frame_obj = array.get(i);
-                                if let Some(tf) = parse_js_frame_transform(&frame_obj) {
-                                    TF_STATE.with(|tree| {
-                                        tree.borrow_mut().insert(tf);
-                                    });
-                                    frames_changed = true;
-                                }
+                let topic_cfg = cfg.topics.get(&topic_info.name).cloned().unwrap_or_default();
+                let config_js = serde_wasm_bindgen::to_value(&topic_cfg).unwrap_or(JsValue::NULL);
+
+                // Call FrameTransforms JS converter
+                let result = js_convert_message_with_object(&topic_info.schema_name, message_obj.clone(), config_js.clone());
+                if !result.is_null() && !result.is_undefined() {
+                    if let Ok(array) = js_sys::Array::try_from(result) {
+                        for i in 0..array.length() {
+                            let frame_obj = array.get(i);
+                            if let Some(tf) = parse_js_frame_transform(&frame_obj) {
+                                TF_STATE.with(|tree| {
+                                    tree.borrow_mut().insert(tf);
+                                });
+                                frames_changed = true;
                             }
                         }
                     }
+                }
 
-                    // Call SceneUpdate converter (only for last message in batch to avoid thrashing)
-                    if std::ptr::eq(msg, messages.last().unwrap()) {
-                        let scene_result = js_convert_message_to_scene(&topic_info.schema_name, message_obj, config_js);
-                        if !scene_result.is_null() && !scene_result.is_undefined() {
-                            let (cubes, lines, triangles) = parse_scene_update_result(&scene_result);
-                            if !cubes.is_empty() || !lines.is_empty() || !triangles.is_empty() {
-                                // Auto-center camera only when no display frame / TF is available
-                                let need_center = !has_centered.get_untracked();
-                                let has_display_frame = !state.display_frame.get_untracked().is_empty();
-                                if need_center && !triangles.is_empty() && !has_display_frame {
-                                    let mut cx = 0.0f64;
-                                    let mut cy = 0.0f64;
-                                    let mut cz = 0.0f64;
-                                    let mut count = 0u32;
-                                    for tri in triangles.iter().take(50) {
-                                        for chunk in tri.points.chunks(3) {
-                                            if chunk.len() == 3 {
-                                                cx += chunk[0] as f64;
-                                                cy += chunk[1] as f64;
-                                                cz += chunk[2] as f64;
-                                                count += 1;
-                                            }
+                // Call SceneUpdate JS converter on the last message of the batch
+                if std::ptr::eq(msg, messages.last().unwrap()) {
+                    let scene_result = js_convert_message_to_scene(&topic_info.schema_name, message_obj, config_js);
+                    if !scene_result.is_null() && !scene_result.is_undefined() {
+                        let (cubes, lines, triangles) = parse_scene_update_result(&scene_result);
+                        if !cubes.is_empty() || !lines.is_empty() || !triangles.is_empty() {
+                            let need_center = !has_centered.get_untracked();
+                            let has_display_frame = !state.display_frame.get_untracked().is_empty();
+                            if need_center && !triangles.is_empty() && !has_display_frame {
+                                let mut cx = 0.0f64;
+                                let mut cy = 0.0f64;
+                                let mut cz = 0.0f64;
+                                let mut count = 0u32;
+                                for tri in triangles.iter().take(50) {
+                                    for chunk in tri.points.chunks(3) {
+                                        if chunk.len() == 3 {
+                                            cx += chunk[0] as f64;
+                                            cy += chunk[1] as f64;
+                                            cz += chunk[2] as f64;
+                                            count += 1;
                                         }
-                                        if count > 500 { break; }
                                     }
-                                    if count > 0 {
-                                        cx /= count as f64;
-                                        cy /= count as f64;
-                                        cz /= count as f64;
-                                        with_scene_mut(|s| {
-                                            s.camera.user_target = Vec3::new(cx as f32, cy as f32, cz as f32);
-                                            s.camera.target = s.camera.user_target;
-                                            s.camera.distance = 200.0;
-                                            s.camera.user_elevation = 1.0;
-                                        });
-                                    }
-                                    has_centered.set(true);
-                                } else if need_center && has_display_frame {
-                                    has_centered.set(true);
+                                    if count > 500 { break; }
                                 }
-
-                                SCENE_ENTITIES.with(|ent| {
-                                    let mut e = ent.borrow_mut();
-                                    e.0 = cubes;
-                                    e.1 = lines;
-                                    e.2 = triangles;
-                                });
-                                with_scene_mut(|s| {
-                                    s.scene_dirty = true;
-                                });
+                                if count > 0 {
+                                    cx /= count as f64;
+                                    cy /= count as f64;
+                                    cz /= count as f64;
+                                    with_scene_mut(|s| {
+                                        s.camera.user_target = Vec3::new(cx as f32, cy as f32, cz as f32);
+                                        s.camera.target = s.camera.user_target;
+                                        s.camera.distance = 200.0;
+                                        s.camera.user_elevation = 1.0;
+                                    });
+                                }
+                                has_centered.set(true);
+                            } else if need_center && has_display_frame {
+                                has_centered.set(true);
                             }
+
+                            SCENE_ENTITIES.with(|ent| {
+                                let mut e = ent.borrow_mut();
+                                e.0 = cubes;
+                                e.1 = lines;
+                                e.2 = triangles;
+                            });
+                            with_scene_mut(|s| {
+                                s.scene_dirty = true;
+                            });
                         }
                     }
                 }
@@ -2942,7 +3014,12 @@ pub fn ThreeDeePanel(node_id: NodeId) -> impl IntoView {
             }
         }
 
-        // ===== SINGLE render call per tick =====
+        // ===== Render synchronously after processing =====
+        if let Some(player) = get_player() {
+            with_scene_mut(|s| {
+                s.current_time_ns = player.current_time_ns();
+            });
+        }
         with_scene_mut(|s| {
             s.render();
             s.scene_dirty = false;
